@@ -2,7 +2,7 @@
 /**
  * Maneja la creación de la página de ajustes para WooWApp.
  * @package WooWApp
- * @version 1.8.0
+ * @version 1.8.1
  */
 if (!defined('ABSPATH')) exit;
 
@@ -14,7 +14,11 @@ class WSE_Pro_Settings {
         add_action('woocommerce_update_options_woowapp', [$this, 'update_settings']);
         add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_scripts']);
         add_action('wp_ajax_wse_pro_send_test', [WSE_Pro_API_Handler::class, 'ajax_send_test_whatsapp']);
+        
+        // --- Renderizadores para campos personalizados ---
         add_action('woocommerce_admin_field_textarea_with_pickers', [$this, 'render_textarea_with_pickers']);
+        add_action('woocommerce_admin_field_button', [$this, 'render_button_field']); // <-- ARREGLO AÑADIDO AQUÍ
+
         add_filter('woocommerce_settings_api_sanitized_fields_woowapp', [$this, 'sanitize_textarea_fields']);
     }
 
@@ -207,8 +211,11 @@ class WSE_Pro_Settings {
             ['name' => __('Adjuntar Imagen de Producto (Pedidos)', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_attach_product_image', 'desc' => __('<strong>Activa esta opción para adjuntar la imagen del producto en los mensajes de estado de pedido.</strong> (Solo para WhatsApp)', 'woowapp-smsenlinea-pro'), 'default' => 'no'],
             ['name' => __('Activar Registro de Actividad (Log)', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_enable_log', 'default' => 'yes', 'desc' => sprintf(__('Guarda un registro. Puedes verlo en <a href="%s">WooCommerce > Estado > Registros</a> (busca "<code>%s</code>").', 'woowapp-smsenlinea-pro'), esc_url($log_url), esc_html($log_handle))],
             ['type' => 'sectionend', 'id' => 'wse_pro_api_settings_end'],
+            
+            // --- SECCIÓN DE PRUEBA ---
             ['name' => __('Prueba de Envío', 'woowapp-smsenlinea-pro'), 'type' => 'title', 'id' => 'wse_pro_test_settings_title'],
             ['name' => __('Número de Destino', 'woowapp-smsenlinea-pro'), 'type' => 'text', 'id' => 'wse_pro_test_number', 'css' => 'min-width:300px;', 'placeholder' => __('Ej: 573001234567', 'woowapp-smsenlinea-pro')],
+            // El campo 'button' ahora será renderizado por la nueva función render_button_field()
             ['name' => '', 'type' => 'button', 'id' => 'wse_pro_send_test_button', 'class' => 'button-secondary', 'value' => __('Enviar Mensaje de Prueba', 'woowapp-smsenlinea-pro'), 'desc' => '<span id="test_send_status"></span>'],
             ['type' => 'sectionend', 'id' => 'wse_pro_test_settings_end'],
         ];
@@ -219,6 +226,7 @@ class WSE_Pro_Settings {
      * @return array
      */
     private function get_admin_messages_settings() {
+        // ... (Esta función no necesita cambios, la incluyo para que el archivo esté completo)
         $settings = [
             ['name' => __('Notificaciones para Administradores', 'woowapp-smsenlinea-pro'), 'type' => 'title', 'id' => 'wse_pro_admin_settings_title', 'desc' => __('Define aquí los números de los administradores y personaliza los mensajes que recibirán con cada cambio de estado.', 'woowapp-smsenlinea-pro')],
             ['name' => __('Números de Administradores', 'woowapp-smsenlinea-pro'), 'type' => 'textarea', 'id' => 'wse_pro_admin_numbers', 'css'  => 'width:100%; height: 100px;', 'desc' => __('Ingresa los números de teléfono, <strong>uno por línea</strong>. Incluye el código de país (Ej: 573001234567).', 'woowapp-smsenlinea-pro'), 'desc_tip' => false],
@@ -238,6 +246,7 @@ class WSE_Pro_Settings {
      * @return array
      */
     private function get_customer_messages_settings() {
+        // ... (Esta función no necesita cambios, la incluyo para que el archivo esté completo)
         $settings = [['name' => __('Plantillas de Mensajes para Clientes', 'woowapp-smsenlinea-pro'), 'type' => 'title', 'id' => 'wse_pro_notifications_title']];
         $templates = ['note' => ['name' => __('Nueva Nota de Pedido', 'woowapp-smsenlinea-pro'), 'default' => __('Hola {customer_name}, tienes una nueva nota en tu pedido #{order_id}: {note_content}', 'woowapp-smsenlinea-pro')]];
         foreach (wc_get_order_statuses() as $slug => $name) {
@@ -257,6 +266,7 @@ class WSE_Pro_Settings {
      * @return array
      */
     private function get_notifications_settings() {
+        // ... (Esta función no necesita cambios, la incluyo para que el archivo esté completo)
         return [
             ['name' => __('Recordatorio de Reseña de Producto', 'woowapp-smsenlinea-pro'), 'type' => 'title', 'id' => 'wse_pro_review_reminders_title', 'desc' => __('Envía un mensaje automático para incentivar las reseñas de productos.', 'woowapp-smsenlinea-pro')],
             ['name' => __('Activar recordatorio de reseña', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_enable_review_reminder', 'desc' => __('<strong>Activar para enviar solicitudes de reseña automáticamente.</strong>', 'woowapp-smsenlinea-pro'), 'default' => 'no'],
@@ -332,6 +342,33 @@ class WSE_Pro_Settings {
     }
 
     /**
+     * --- NUEVO: Renderiza el campo de botón personalizado ---
+     * Esta función es llamada por el hook 'woocommerce_admin_field_button' para mostrar el botón.
+     *
+     * @param array $value La definición del campo.
+     */
+    public function render_button_field($value) {
+        $field_description = WC_Admin_Settings::get_field_description($value);
+        ?>
+        <tr valign="top">
+            <th scope="row" class="titledesc">
+                <label for="<?php echo esc_attr($value['id']); ?>"><?php echo esc_html($value['title']); ?></label>
+                <?php echo $field_description['tooltip_html']; ?>
+            </th>
+            <td class="forminp forminp-button">
+                 <button
+                    type="button"
+                    id="<?php echo esc_attr($value['id']); ?>"
+                    class="<?php echo esc_attr($value['class']); ?>"
+                ><?php echo esc_html($value['value']); ?></button>
+                <?php echo $field_description['description']; // Esto renderiza el span para el estado ?>
+            </td>
+        </tr>
+        <?php
+    }
+
+
+    /**
      * Encola los scripts y estilos CSS necesarios en la página de ajustes.
      *
      * @param string $hook El hook de la página actual.
@@ -340,8 +377,8 @@ class WSE_Pro_Settings {
         if ('woocommerce_page_wc-settings' !== $hook) return;
         if (!isset($_GET['tab']) || 'woowapp' !== $_GET['tab']) return;
 
-        wp_enqueue_style('wse-pro-admin-css', WSE_PRO_URL . 'assets/css/admin.css', [], WSE_PRO_VERSION);
-        wp_enqueue_script('wse-pro-admin-js', WSE_PRO_URL . 'assets/js/admin.js', ['jquery'], WSE_PRO_VERSION, true);
+        wp_enqueue_style('wse-pro-admin-css', WSE_PRO_URL . 'assets/css/admin.css', [], '1.8.1');
+        wp_enqueue_script('wse-pro-admin-js', WSE_PRO_URL . 'assets/js/admin.js', ['jquery'], '1.8.1', true);
         wp_localize_script('wse-pro-admin-js', 'wse_pro_admin_params', [
             'ajax_url' => admin_url('admin-ajax.php'),
             'nonce'    => wp_create_nonce('wse_pro_send_test_nonce')
