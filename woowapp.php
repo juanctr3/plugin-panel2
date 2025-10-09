@@ -3,7 +3,7 @@
  * Plugin Name:       WooWApp
  * Plugin URI:        https://smsenlinea.com
  * Description:       Una solución robusta para enviar notificaciones de WhatsApp a los clientes de WooCommerce utilizando la API de SMSenlinea. Incluye recordatorios de reseñas y recuperación de carritos abandonados.
- * Version:           2.1.1
+ * Version:           2.1.2
  * Author:            smsenlinea
  * Author URI:        https://smsenlinea.com
  * License:           GPL-2.0+
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
     exit; // Exit if accessed directly.
 }
 
-define('WSE_PRO_VERSION', '2.1.1');
+define('WSE_PRO_VERSION', '2.1.2');
 define('WSE_PRO_PATH', plugin_dir_path(__FILE__));
 define('WSE_PRO_URL', plugin_dir_url(__FILE__));
 
@@ -90,14 +90,8 @@ final class WooWApp {
                 'post_content' => '',
             ]);
         }
-
-        // --- INICIO DE LA CORRECCIÓN ---
-        // Refresca las reglas de reescritura de WordPress para que reconozca la nueva página.
         flush_rewrite_rules();
-        // --- FIN DE LA CORRECCIÓN ---
     }
-
-    // ... (El resto del archivo no necesita cambios, lo incluyo completo para tu comodidad)
 
     /**
      * Inicializador principal del plugin.
@@ -126,6 +120,12 @@ final class WooWApp {
      */
     public function init_classes() {
         new WSE_Pro_Settings();
+        
+        // --- INICIO DE LA CORRECCIÓN ---
+        // Registra los parámetros personalizados para que WordPress los reconozca.
+        add_filter('query_vars', [$this, 'add_custom_query_vars']);
+        // --- FIN DE LA CORRECCIÓN ---
+
         add_action('woocommerce_new_customer_note', [$this, 'trigger_new_note_notification'], 10, 1);
         foreach (array_keys(wc_get_order_statuses()) as $status) {
             add_action('woocommerce_order_status_' . str_replace('wc-', '', $status), [$this, 'trigger_status_change_notification'], 10, 2);
@@ -146,6 +146,22 @@ final class WooWApp {
         add_filter('woocommerce_order_actions', [$this, 'add_manual_review_request_action']);
         add_action('woocommerce_order_action_wse_send_review_request', [$this, 'process_manual_review_request_action']);
     }
+
+    /**
+     * --- NUEVA FUNCIÓN ---
+     * Añade nuestras variables de URL personalizadas a la lista de variables reconocidas por WordPress.
+     *
+     * @param array $vars El array de variables existentes.
+     * @return array El array modificado.
+     */
+    public function add_custom_query_vars($vars) {
+        $vars[] = 'recover-cart-wse';
+        $vars[] = 'order_id';
+        $vars[] = 'key';
+        return $vars;
+    }
+    
+    // ... (El resto de funciones como enqueue_frontend_scripts, capture_cart_via_ajax, etc., no cambian) ...
 
     /**
      * Carga el script de JS solo en la página de pago.
@@ -211,10 +227,10 @@ final class WooWApp {
      * Procesa el enlace de recuperación, restaura el carrito y los datos, y redirige al checkout.
      */
     public function handle_cart_recovery_link() {
-        if (!isset($_GET['recover-cart-wse'])) return;
+        if (!get_query_var('recover-cart-wse')) return;
 
         global $wpdb;
-        $token = sanitize_text_field($_GET['recover-cart-wse']);
+        $token = sanitize_text_field(get_query_var('recover-cart-wse'));
         $cart_row = $wpdb->get_row($wpdb->prepare("SELECT * FROM " . self::$abandoned_cart_table_name . " WHERE recovery_token = %s AND status IN ('active', 'sent')", $token));
         
         if ($cart_row) {
@@ -318,7 +334,7 @@ final class WooWApp {
      */
     public function send_review_reminder_notification($order_id) {
         $order = wc_get_order($order_id);
-        if (!$order || $order->get_status() !== 'completed') return;
+        if (!$order || ($order->get_status() !== 'completed' && $order_id > 0)) return;
 
         $template = get_option('wse_pro_review_reminder_message');
         if (empty($template)) return;
@@ -371,9 +387,10 @@ final class WooWApp {
             }
         }
 
-        if (isset($_GET['order_id']) && isset($_GET['key'])) {
-            $order_id = absint($_GET['order_id']);
-            $order_key = sanitize_text_field($_GET['key']);
+        $order_id = absint(get_query_var('order_id'));
+        $order_key = sanitize_text_field(get_query_var('key'));
+        
+        if ($order_id > 0 && !empty($order_key)) {
             $order = wc_get_order($order_id);
 
             if ($order && $order->get_order_key() === $order_key) {
@@ -413,10 +430,22 @@ final class WooWApp {
      * Procesa la acción manual de envío de solicitud de reseña.
      */
     public function process_manual_review_request_action($order) {
-        $this->send_review_reminder_notification($order->get_id());
-        $order->add_order_note(
-            __('Solicitud de reseña enviada manualmente al cliente.', 'woowapp-smsenlinea-pro')
-        );
+        // En lugar de llamar a la función de notificación automática, llamamos directamente a la de envío
+        // para asegurar que se envíe sin importar el estado del pedido.
+        $template = get_option('wse_pro_review_reminder_message');
+        if (!empty($template)) {
+            $api_handler = new WSE_Pro_API_Handler();
+            $message = WSE_Pro_Placeholders::replace($template, $order);
+            $api_handler->send_message($order->get_billing_phone(), $message, $order, 'customer');
+
+            $order->add_order_note(
+                __('Solicitud de reseña enviada manualmente al cliente.', 'woowapp-smsenlinea-pro')
+            );
+        } else {
+            $order->add_order_note(
+                __('Fallo al enviar solicitud de reseña: La plantilla de mensaje está vacía.', 'woowapp-smsenlinea-pro')
+            );
+        }
     }
 
     /**
