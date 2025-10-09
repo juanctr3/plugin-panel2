@@ -3,7 +3,7 @@
  * Maneja la lógica de reemplazo de placeholders para los mensajes y define las variables disponibles.
  *
  * @package WooWApp
- * @version 1.9.0
+ * @version 1.6.0
  */
 
 if (!defined('ABSPATH')) {
@@ -252,3 +252,4 @@ class WSE_Pro_Placeholders {
         ];
     }
 }
+
