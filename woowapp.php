@@ -3,7 +3,7 @@
  * Plugin Name:       WooWApp
  * Plugin URI:        https://smsenlinea.com
  * Description:       Una solución robusta para enviar notificaciones de WhatsApp a los clientes de WooCommerce utilizando la API de SMSenlinea. Incluye recordatorios de reseñas y recuperación de carritos abandonados.
- * Version:           2.1.2
+ * Version:           2.1.3
  * Author:            smsenlinea
  * Author URI:        https://smsenlinea.com
  * License:           GPL-2.0+
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
     exit; // Exit if accessed directly.
 }
 
-define('WSE_PRO_VERSION', '2.1.2');
+define('WSE_PRO_VERSION', '2.1.3');
 define('WSE_PRO_PATH', plugin_dir_path(__FILE__));
 define('WSE_PRO_URL', plugin_dir_url(__FILE__));
 
@@ -80,17 +80,35 @@ final class WooWApp {
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
         dbDelta($sql);
 
+        // Crear la página de reseñas si no existe
+        self::create_review_page();
+        
+        // Refrescar los permalinks
+        flush_rewrite_rules();
+    }
+
+    /**
+     * Crea la página de reseñas si no existe.
+     */
+    private static function create_review_page() {
         $review_page_slug = 'escribir-resena';
-        if (null === get_page_by_path($review_page_slug)) {
-            wp_insert_post([
+        $existing_page = get_page_by_path($review_page_slug);
+        
+        if (null === $existing_page) {
+            $page_id = wp_insert_post([
                 'post_title'   => __('Escribir Reseña', 'woowapp-smsenlinea-pro'),
                 'post_name'    => $review_page_slug,
                 'post_status'  => 'publish',
                 'post_type'    => 'page',
-                'post_content' => '',
+                'post_content' => '[woowapp_review_form]', // Shortcode para mayor control
             ]);
+            
+            if ($page_id && !is_wp_error($page_id)) {
+                update_option('wse_pro_review_page_id', $page_id);
+            }
+        } else {
+            update_option('wse_pro_review_page_id', $existing_page->ID);
         }
-        flush_rewrite_rules();
     }
 
     /**
@@ -104,6 +122,28 @@ final class WooWApp {
         load_plugin_textdomain('woowapp-smsenlinea-pro', false, dirname(plugin_basename(__FILE__)) . '/languages');
         $this->includes();
         $this->init_classes();
+        
+        // Añadir aviso en el admin si la página no existe
+        add_action('admin_notices', [$this, 'check_review_page_exists']);
+    }
+
+    /**
+     * Verifica si la página de reseñas existe y muestra un aviso si no.
+     */
+    public function check_review_page_exists() {
+        $page_id = get_option('wse_pro_review_page_id');
+        $page = $page_id ? get_post($page_id) : null;
+        
+        if (!$page || $page->post_status !== 'publish') {
+            $screen = get_current_screen();
+            if ($screen && $screen->id === 'woocommerce_page_wc-settings') {
+                echo '<div class="notice notice-warning"><p><strong>WooWApp:</strong> ';
+                echo __('La página de reseñas no existe o no está publicada. ', 'woowapp-smsenlinea-pro');
+                echo '<a href="' . esc_url(admin_url('admin.php?page=wc-settings&tab=woowapp&action=recreate_review_page')) . '">';
+                echo __('Haz clic aquí para recrearla', 'woowapp-smsenlinea-pro');
+                echo '</a></p></div>';
+            }
+        }
     }
 
     /**
@@ -121,10 +161,15 @@ final class WooWApp {
     public function init_classes() {
         new WSE_Pro_Settings();
         
-        // --- INICIO DE LA CORRECCIÓN ---
-        // Registra los parámetros personalizados para que WordPress los reconozca.
-        add_filter('query_vars', [$this, 'add_custom_query_vars']);
-        // --- FIN DE LA CORRECCIÓN ---
+        // Manejar la recreación de la página de reseñas
+        if (isset($_GET['action']) && $_GET['action'] === 'recreate_review_page' && 
+            isset($_GET['page']) && $_GET['page'] === 'wc-settings' &&
+            isset($_GET['tab']) && $_GET['tab'] === 'woowapp') {
+            self::create_review_page();
+            flush_rewrite_rules();
+            wp_redirect(admin_url('admin.php?page=wc-settings&tab=woowapp&section=notifications'));
+            exit;
+        }
 
         add_action('woocommerce_new_customer_note', [$this, 'trigger_new_note_notification'], 10, 1);
         foreach (array_keys(wc_get_order_statuses()) as $status) {
@@ -142,26 +187,15 @@ final class WooWApp {
             add_action('template_redirect', [$this, 'handle_cart_recovery_link']);
         }
 
+        // Registrar el shortcode para el formulario de reseñas
+        add_shortcode('woowapp_review_form', [$this, 'render_review_form_shortcode']);
+        
+        // También mantener el filtro de contenido como fallback
         add_filter('the_content', [$this, 'handle_custom_review_page_content']);
+        
         add_filter('woocommerce_order_actions', [$this, 'add_manual_review_request_action']);
         add_action('woocommerce_order_action_wse_send_review_request', [$this, 'process_manual_review_request_action']);
     }
-
-    /**
-     * --- NUEVA FUNCIÓN ---
-     * Añade nuestras variables de URL personalizadas a la lista de variables reconocidas por WordPress.
-     *
-     * @param array $vars El array de variables existentes.
-     * @return array El array modificado.
-     */
-    public function add_custom_query_vars($vars) {
-        $vars[] = 'recover-cart-wse';
-        $vars[] = 'order_id';
-        $vars[] = 'key';
-        return $vars;
-    }
-    
-    // ... (El resto de funciones como enqueue_frontend_scripts, capture_cart_via_ajax, etc., no cambian) ...
 
     /**
      * Carga el script de JS solo en la página de pago.
@@ -227,10 +261,11 @@ final class WooWApp {
      * Procesa el enlace de recuperación, restaura el carrito y los datos, y redirige al checkout.
      */
     public function handle_cart_recovery_link() {
-        if (!get_query_var('recover-cart-wse')) return;
+        // Usar $_GET directamente para parámetros de query string
+        if (!isset($_GET['recover-cart-wse'])) return;
 
         global $wpdb;
-        $token = sanitize_text_field(get_query_var('recover-cart-wse'));
+        $token = sanitize_text_field($_GET['recover-cart-wse']);
         $cart_row = $wpdb->get_row($wpdb->prepare("SELECT * FROM " . self::$abandoned_cart_table_name . " WHERE recovery_token = %s AND status IN ('active', 'sent')", $token));
         
         if ($cart_row) {
@@ -345,13 +380,17 @@ final class WooWApp {
     }
 
     /**
-     * Muestra y procesa el formulario de reseñas en la página personalizada.
+     * Renderiza el formulario de reseñas mediante shortcode.
      */
-    public function handle_custom_review_page_content($content) {
-        if (!is_page('escribir-resena')) {
-            return $content;
-        }
+    public function render_review_form_shortcode($atts) {
+        return $this->get_review_form_html();
+    }
 
+    /**
+     * Obtiene el HTML del formulario de reseñas.
+     */
+    private function get_review_form_html() {
+        // Procesar el envío del formulario
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['wse_review_nonce'])) {
             if (!wp_verify_nonce($_POST['wse_review_nonce'], 'wse_submit_review')) {
                 return '<div class="woocommerce-error">' . __('Error de seguridad. Inténtalo de nuevo.', 'woowapp-smsenlinea-pro') . '</div>';
@@ -364,7 +403,7 @@ final class WooWApp {
             
             $order = wc_get_order($order_id);
             if (!$order) {
-                 return '<div class="woocommerce-error">' . __('Pedido no válido.', 'woowapp-smsenlinea-pro') . '</div>';
+                return '<div class="woocommerce-error">' . __('Pedido no válido.', 'woowapp-smsenlinea-pro') . '</div>';
             }
 
             $commentdata = [
@@ -387,8 +426,9 @@ final class WooWApp {
             }
         }
 
-        $order_id = absint(get_query_var('order_id'));
-        $order_key = sanitize_text_field(get_query_var('key'));
+        // Obtener parámetros de la URL usando $_GET directamente
+        $order_id = isset($_GET['order_id']) ? absint($_GET['order_id']) : 0;
+        $order_key = isset($_GET['key']) ? sanitize_text_field($_GET['key']) : '';
         
         if ($order_id > 0 && !empty($order_key)) {
             $order = wc_get_order($order_id);
@@ -399,6 +439,8 @@ final class WooWApp {
                 
                 foreach ($order->get_items() as $item) {
                     $product = $item->get_product();
+                    if (!$product) continue;
+                    
                     $html .= '<div class="review-form-wrapper" style="border:1px solid #ddd; padding:20px; margin-bottom:20px; border-radius: 5px;">';
                     $html .= '<h4>' . esc_html($product->get_name()) . '</h4>';
                     $html .= '<form method="post" class="woowapp-review-form">';
@@ -419,6 +461,25 @@ final class WooWApp {
     }
 
     /**
+     * Muestra y procesa el formulario de reseñas en la página personalizada (fallback).
+     */
+    public function handle_custom_review_page_content($content) {
+        $page_id = get_option('wse_pro_review_page_id');
+        
+        if (!is_page($page_id)) {
+            return $content;
+        }
+
+        // Si ya hay shortcode en el contenido, no hacer nada
+        if (has_shortcode($content, 'woowapp_review_form')) {
+            return $content;
+        }
+
+        // Añadir el formulario automáticamente
+        return $content . $this->get_review_form_html();
+    }
+
+    /**
      * Añade la opción "Enviar solicitud de reseña" al menú de acciones del pedido.
      */
     public function add_manual_review_request_action($actions) {
@@ -430,8 +491,6 @@ final class WooWApp {
      * Procesa la acción manual de envío de solicitud de reseña.
      */
     public function process_manual_review_request_action($order) {
-        // En lugar de llamar a la función de notificación automática, llamamos directamente a la de envío
-        // para asegurar que se envíe sin importar el estado del pedido.
         $template = get_option('wse_pro_review_reminder_message');
         if (!empty($template)) {
             $api_handler = new WSE_Pro_API_Handler();
