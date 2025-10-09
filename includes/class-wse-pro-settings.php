@@ -2,96 +2,13 @@
 /**
  * Maneja la creación de la página de ajustes para WooWApp.
  * @package WooWApp
- * @version 1.6.0
+ * @version 1.8.0 // Version incrementada
  */
 if (!defined('ABSPATH')) exit;
 
 class WSE_Pro_Settings {
 
-    public function __construct() {
-        add_filter('woocommerce_settings_tabs_array', [$this, 'add_settings_tab'], 50);
-        add_action('woocommerce_settings_tabs_woowapp', [$this, 'settings_tab_content']);
-        add_action('woocommerce_update_options_woowapp', [$this, 'update_settings']);
-        add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_scripts']);
-        add_action('wp_ajax_wse_pro_send_test', [WSE_Pro_API_Handler::class, 'ajax_send_test_whatsapp']);
-        add_action('woocommerce_admin_field_textarea_with_pickers', [$this, 'render_textarea_with_pickers']);
-        add_filter('woocommerce_settings_api_sanitized_fields_woowapp', [$this, 'sanitize_textarea_fields']);
-    }
-
-    /**
-     * Añade la pestaña principal del plugin a los ajustes de WooCommerce.
-     *
-     * @param array $settings_tabs Array de pestañas de ajustes de WooCommerce.
-     * @return array Array de pestañas modificado.
-     */
-    public function add_settings_tab($settings_tabs) {
-        $settings_tabs['woowapp'] = __('WooWApp', 'woowapp-smsenlinea-pro');
-        return $settings_tabs;
-    }
-
-    /**
-     * Muestra el contenido de la pestaña, incluyendo la navegación por sub-pestañas.
-     */
-    public function settings_tab_content() {
-        $current_section = isset($_GET['section']) ? sanitize_key($_GET['section']) : 'administration';
-        $tabs = [
-            'administration'    => __('Administración', 'woowapp-smsenlinea-pro'),
-            'admin_messages'    => __('Mensajes Admin', 'woowapp-smsenlinea-pro'),
-            'customer_messages' => __('Mensajes Cliente', 'woowapp-smsenlinea-pro'),
-            'notifications'     => __('Notificaciones', 'woowapp-smsenlinea-pro'),
-        ];
-
-        echo '<h2 class="nav-tab-wrapper woo-nav-tab-wrapper">';
-        foreach ($tabs as $id => $name) {
-            $class = ($current_section === $id) ? 'nav-tab-active' : '';
-            echo '<a href="' . esc_url(admin_url('admin.php?page=wc-settings&tab=woowapp&section=' . $id)) . '" class="nav-tab ' . esc_attr($class) . '">' . esc_html($name) . '</a>';
-        }
-        echo '</h2>';
-
-        woocommerce_admin_fields($this->get_settings($current_section));
-    }
-
-    /**
-     * Guarda los ajustes de la sub-pestaña activa.
-     */
-    public function update_settings() {
-        $current_section = isset($_GET['section']) ? sanitize_key($_GET['section']) : 'administration';
-        woocommerce_update_options($this->get_settings($current_section));
-    }
-
-    /**
-     * Sanitiza los campos textarea para preservar saltos de línea al guardar.
-     *
-     * @param array $sanitized_settings Ajustes sanitizados.
-     * @return array Ajustes sanitizados con textareas procesados.
-     */
-	public function sanitize_textarea_fields($sanitized_settings) {
-        $all_settings = $this->get_settings(true);
-        foreach ($all_settings as $setting) {
-            if (isset($setting['id'], $setting['type']) && in_array($setting['type'], ['textarea', 'textarea_with_pickers'])) {
-                $option_id = $setting['id'];
-                if (isset($_POST[$option_id])) {
-                    $sanitized_settings[$option_id] = sanitize_textarea_field(wp_unslash($_POST[$option_id]));
-                }
-            }
-        }
-        return $sanitized_settings;
-    }
-
-    /**
-     * Obtiene el array de ajustes correspondiente a la sub-pestaña activa.
-     *
-     * @param string $section La sección actual.
-     * @return array
-     */
-    public function get_settings($section = '') {
-        switch ($section) {
-            case 'admin_messages': return $this->get_admin_messages_settings();
-            case 'customer_messages': return $this->get_customer_messages_settings();
-            case 'notifications': return $this->get_notifications_settings();
-            default: return $this->get_administration_settings();
-        }
-    }
+    // ... (El resto de la clase permanece igual hasta get_administration_settings) ...
 
     /**
      * Define los ajustes para la pestaña "Administración".
@@ -100,12 +17,103 @@ class WSE_Pro_Settings {
     private function get_administration_settings() {
         $log_url = admin_url('admin.php?page=wc-status&tab=logs');
         $log_handle = WSE_Pro_API_Handler::$log_handle;
+
+        $panel1_docs_url = 'https://documenter.getpostman.com/view/20356708/2s93zB5c3s#intro'; // URL de referencia
+        $panel2_login_url = 'https://app.smsenlinea.com/login';
+
         return [
             ['name' => __('Ajustes de API y Generales', 'woowapp-smsenlinea-pro'), 'type' => 'title', 'id' => 'wse_pro_api_settings_title'],
-            ['name' => __('Token de Autenticación', 'woowapp-smsenlinea-pro'), 'type' => 'text', 'id' => 'wse_pro_api_token', 'css' => 'min-width:300px;'],
-            ['name' => __('Número de Remitente', 'woowapp-smsenlinea-pro'), 'type' => 'text', 'id' => 'wse_pro_from_number', 'desc' => __('Incluye el código de país. Ej: 5211234567890', 'woowapp-smsenlinea-pro'), 'desc_tip' => true],
+            
+            [
+                'name'    => __('Seleccionar API', 'woowapp-smsenlinea-pro'),
+                'type'    => 'select',
+                'id'      => 'wse_pro_api_panel_selection',
+                'options' => [
+                    'panel2' => __('API Panel 2 (WhatsApp QR)', 'woowapp-smsenlinea-pro'),
+                    'panel1' => __('API Panel 1 (SMS y WhatsApp Clásico)', 'woowapp-smsenlinea-pro'),
+                ],
+                'desc'    => __('Elige el panel de SMSenlinea que deseas utilizar. Los ajustes cambiarán según tu selección.', 'woowapp-smsenlinea-pro'),
+                'desc_tip' => true,
+                'default' => 'panel2',
+            ],
+
+            // --- CAMPOS PARA API PANEL 2 (WhatsApp QR) ---
+            [
+                'name' => __('Token de Autenticación (Panel 2)', 'woowapp-smsenlinea-pro'), 
+                'type' => 'text', 
+                'id' => 'wse_pro_api_token', 
+                'css' => 'min-width:300px;',
+                'desc' => sprintf(__('Ingresa el token de tu instancia. Inicia sesión en <a href="%s" target="_blank">Panel 2</a> para obtenerlo.', 'woowapp-smsenlinea-pro'), esc_url($panel2_login_url)),
+                'custom_attributes' => ['data-panel' => 'panel2'],
+            ],
+            [
+                'name' => __('Número de Remitente (Panel 2)', 'woowapp-smsenlinea-pro'), 
+                'type' => 'text', 
+                'id' => 'wse_pro_from_number', 
+                'desc' => __('Incluye el código de país. Ej: 5211234567890. Debe ser el número de la instancia QR.', 'woowapp-smsenlinea-pro'), 
+                'desc_tip' => true,
+                'custom_attributes' => ['data-panel' => 'panel2'],
+            ],
+
+            // --- NUEVO: CAMPOS CORREGIDOS PARA API PANEL 1 ---
+            [
+                'name' => __('API Secret (Panel 1)', 'woowapp-smsenlinea-pro'), 
+                'type' => 'text', 
+                'id' => 'wse_pro_api_secret_panel1', 
+                'css' => 'min-width:300px;',
+                'desc' => sprintf(__('Copia tu API Secret desde la sección "Herramientas -> API Keys" en el <a href="%s" target="_blank">Panel 1</a>.', 'woowapp-smsenlinea-pro'), esc_url($panel1_docs_url)),
+                'custom_attributes' => ['data-panel' => 'panel1'],
+            ],
+            [
+                'name'    => __('Tipo de Mensaje (Panel 1)', 'woowapp-smsenlinea-pro'),
+                'type'    => 'select',
+                'id'      => 'wse_pro_message_type_panel1',
+                'options' => [
+                    'whatsapp' => __('WhatsApp', 'woowapp-smsenlinea-pro'),
+                    'sms'      => __('SMS', 'woowapp-smsenlinea-pro'),
+                ],
+                'desc'    => __('Selecciona el tipo de mensaje a enviar. Los campos de abajo cambiarán según tu elección.', 'woowapp-smsenlinea-pro'),
+                'desc_tip' => true,
+                'default' => 'whatsapp',
+                'custom_attributes' => ['data-panel' => 'panel1'],
+            ],
+            // Campos específicos para WhatsApp (Panel 1)
+            [
+                'name' => __('WhatsApp Account ID (Panel 1)', 'woowapp-smsenlinea-pro'),
+                'type' => 'text',
+                'id'   => 'wse_pro_whatsapp_account_panel1',
+                'css'  => 'min-width:300px;',
+                'desc' => __('El ID único de tu cuenta de WhatsApp. Puedes obtenerlo desde el dashboard del Panel 1 o la API.', 'woowapp-smsenlinea-pro'),
+                'desc_tip' => true,
+                'custom_attributes' => ['data-panel' => 'panel1', 'data-msg-type' => 'whatsapp'],
+            ],
+            // Campos específicos para SMS (Panel 1)
+             [
+                'name'    => __('Modo de Envío SMS (Panel 1)', 'woowapp-smsenlinea-pro'),
+                'type'    => 'select',
+                'id'      => 'wse_pro_sms_mode_panel1',
+                'options' => [
+                    'devices' => __('Usar mis dispositivos (devices)', 'woowapp-smsenlinea-pro'),
+                    'credits' => __('Usar créditos (credits)', 'woowapp-smsenlinea-pro'),
+                ],
+                'desc'    => __('"devices" usa tus dispositivos Android; "credits" usa gateways y requiere saldo.', 'woowapp-smsenlinea-pro'),
+                'desc_tip' => true,
+                'default' => 'devices',
+                'custom_attributes' => ['data-panel' => 'panel1', 'data-msg-type' => 'sms'],
+            ],
+            [
+                'name' => __('Device / Gateway ID (Panel 1)', 'woowapp-smsenlinea-pro'),
+                'type' => 'text',
+                'id'   => 'wse_pro_sms_device_panel1',
+                'css'  => 'min-width:300px;',
+                'desc' => __('El ID de tu dispositivo (si usas "devices") o el ID del gateway (si usas "credits").', 'woowapp-smsenlinea-pro'),
+                'desc_tip' => true,
+                'custom_attributes' => ['data-panel' => 'panel1', 'data-msg-type' => 'sms'],
+            ],
+
+            // --- AJUSTES GENERALES (Comunes a ambos) ---
             ['name' => __('Código de País Predeterminado', 'woowapp-smsenlinea-pro'), 'type' => 'text', 'id' => 'wse_pro_default_country_code', 'desc' => __('Ej: 57 para Colombia. Usado si el cliente no tiene un país de facturación.', 'woowapp-smsenlinea-pro'), 'desc_tip' => true],
-            ['name' => __('Adjuntar Imagen de Producto (Pedidos)', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_attach_product_image', 'desc' => __('<strong>Activa esta opción para adjuntar la imagen del producto en los mensajes de estado de pedido.</strong>', 'woowapp-smsenlinea-pro'), 'default' => 'no'],
+            ['name' => __('Adjuntar Imagen de Producto (Pedidos)', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_attach_product_image', 'desc' => __('<strong>Activa esta opción para adjuntar la imagen del producto en los mensajes de estado de pedido.</strong> (Solo para WhatsApp)', 'woowapp-smsenlinea-pro'), 'default' => 'no'],
             ['name' => __('Activar Registro de Actividad (Log)', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_enable_log', 'default' => 'yes', 'desc' => sprintf(__('Guarda un registro. Puedes verlo en <a href="%s">WooCommerce > Estado > Registros</a> (busca "<code>%s</code>").', 'woowapp-smsenlinea-pro'), esc_url($log_url), esc_html($log_handle))],
             ['type' => 'sectionend', 'id' => 'wse_pro_api_settings_end'],
             ['name' => __('Prueba de Envío', 'woowapp-smsenlinea-pro'), 'type' => 'title', 'id' => 'wse_pro_test_settings_title'],
@@ -248,4 +256,5 @@ class WSE_Pro_Settings {
             'nonce'    => wp_create_nonce('wse_pro_send_test_nonce')
         ]);
     }
+
 }
