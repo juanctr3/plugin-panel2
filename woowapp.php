@@ -3,7 +3,7 @@
  * Plugin Name:       WooWApp
  * Plugin URI:        https://smsenlinea.com
  * Description:       Una solución robusta para enviar notificaciones de WhatsApp a los clientes de WooCommerce utilizando la API de SMSenlinea. Incluye recordatorios de reseñas y recuperación de carritos abandonados.
- * Version:           1.6.0
+ * Version:           2.0.0
  * Author:            smsenlinea
  * Author URI:        https://smsenlinea.com
  * License:           GPL-2.0+
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
     exit; // Exit if accessed directly.
 }
 
-define('WSE_PRO_VERSION', '1.6.0');
+define('WSE_PRO_VERSION', '2.0.0');
 define('WSE_PRO_PATH', plugin_dir_path(__FILE__));
 define('WSE_PRO_URL', plugin_dir_url(__FILE__));
 
@@ -51,9 +51,10 @@ final class WooWApp {
     }
 
     /**
-     * Se ejecuta al activar el plugin para crear/actualizar la tabla de carritos abandonados.
+     * Se ejecuta al activar el plugin para crear la tabla y la página de reseñas.
      */
     public static function on_activation() {
+        // --- 1. Crear la tabla de carritos abandonados ---
         global $wpdb;
         $table_name = $wpdb->prefix . 'wse_pro_abandoned_carts';
         $charset_collate = $wpdb->get_charset_collate();
@@ -79,6 +80,18 @@ final class WooWApp {
 
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
         dbDelta($sql);
+
+        // --- 2. Crear la página de reseñas automáticamente ---
+        $review_page_slug = 'escribir-resena';
+        if (null === get_page_by_path($review_page_slug)) {
+            wp_insert_post([
+                'post_title'   => __('Escribir Reseña', 'woowapp-smsenlinea-pro'),
+                'post_name'    => $review_page_slug,
+                'post_status'  => 'publish',
+                'post_type'    => 'page',
+                'post_content' => '',
+            ]);
+        }
     }
 
     /**
@@ -114,6 +127,7 @@ final class WooWApp {
         }
         add_action('woocommerce_order_status_completed', [$this, 'schedule_review_reminder'], 10, 1);
         add_action('wse_pro_send_review_reminder_event', [$this, 'send_review_reminder_notification'], 10, 1);
+        
         if ('yes' === get_option('wse_pro_enable_abandoned_cart', 'no')) {
             add_action('wp_enqueue_scripts', [$this, 'enqueue_frontend_scripts']);
             add_action('wp_ajax_wse_pro_capture_cart', [$this, 'capture_cart_via_ajax']);
@@ -122,6 +136,8 @@ final class WooWApp {
             add_action('wse_pro_send_abandoned_cart_event', [$this, 'send_abandoned_cart_notification'], 10, 1);
             add_action('template_redirect', [$this, 'handle_cart_recovery_link']);
         }
+
+        add_filter('the_content', [$this, 'handle_custom_review_page_content']);
     }
 
     /**
@@ -195,7 +211,6 @@ final class WooWApp {
         $cart_row = $wpdb->get_row($wpdb->prepare("SELECT * FROM " . self::$abandoned_cart_table_name . " WHERE recovery_token = %s AND status IN ('active', 'sent')", $token));
         
         if ($cart_row) {
-            // Restaurar productos al carrito
             WC()->cart->empty_cart();
             $cart_contents = maybe_unserialize($cart_row->cart_contents);
             if (is_array($cart_contents)) {
@@ -204,25 +219,18 @@ final class WooWApp {
                 }
             }
 
-            // --- LÓGICA MEJORADA: Restaurar los datos del formulario en la sesión del cliente ---
             if (!empty($cart_row->checkout_data)) {
                 parse_str($cart_row->checkout_data, $checkout_fields);
-                
-                if (is_array($checkout_fields)) {
-                    // El objeto WC_Customer permite establecer los datos de facturación y envío
-                    $customer = WC()->customer;
-                    if ($customer) {
-                        foreach ($checkout_fields as $key => $value) {
-                            $s_key = sanitize_key($key);
-                            $s_value = is_array($value) ? array_map('sanitize_text_field', $value) : sanitize_text_field(wp_unslash($value));
-
-                            // Usa los métodos 'set' del objeto cliente de WooCommerce
-                            if (is_callable([$customer, "set_{$s_key}"])) {
-                                $customer->{"set_{$s_key}"}($s_value);
-                            }
+                $customer = WC()->customer;
+                if ($customer && is_array($checkout_fields)) {
+                    foreach ($checkout_fields as $key => $value) {
+                        $s_key = sanitize_key($key);
+                        $s_value = is_array($value) ? array_map('sanitize_text_field', $value) : sanitize_text_field(wp_unslash($value));
+                        if (is_callable([$customer, "set_{$s_key}"])) {
+                            $customer->{"set_{$s_key}"}($s_value);
                         }
-                        $customer->save();
                     }
+                    $customer->save();
                 }
             }
             
@@ -311,6 +319,79 @@ final class WooWApp {
         $api_handler = new WSE_Pro_API_Handler();
         $message = WSE_Pro_Placeholders::replace($template, $order);
         $api_handler->send_message($order->get_billing_phone(), $message, $order, 'customer');
+    }
+
+    /**
+     * Muestra y procesa el formulario de reseñas en la página personalizada.
+     */
+    public function handle_custom_review_page_content($content) {
+        if (!is_page('escribir-resena')) {
+            return $content;
+        }
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['wse_review_nonce'])) {
+            if (!wp_verify_nonce($_POST['wse_review_nonce'], 'wse_submit_review')) {
+                return '<div class="woocommerce-error">' . __('Error de seguridad. Inténtalo de nuevo.', 'woowapp-smsenlinea-pro') . '</div>';
+            }
+
+            $order_id = isset($_POST['review_order_id']) ? absint($_POST['review_order_id']) : 0;
+            $product_id = isset($_POST['review_product_id']) ? absint($_POST['review_product_id']) : 0;
+            $rating = isset($_POST['review_rating']) ? absint($_POST['review_rating']) : 5;
+            $comment_text = isset($_POST['review_comment']) ? sanitize_textarea_field($_POST['review_comment']) : '';
+            
+            $order = wc_get_order($order_id);
+            if (!$order) {
+                 return '<div class="woocommerce-error">' . __('Pedido no válido.', 'woowapp-smsenlinea-pro') . '</div>';
+            }
+
+            $commentdata = [
+                'comment_post_ID'      => $product_id,
+                'comment_author'       => $order->get_billing_first_name(),
+                'comment_author_email' => $order->get_billing_email(),
+                'comment_content'      => $comment_text,
+                'user_id'              => $order->get_user_id() ?: 0,
+                'comment_approved'     => 0,
+                'comment_type'         => 'review',
+            ];
+            
+            $comment_id = wp_insert_comment($commentdata);
+
+            if ($comment_id) {
+                add_comment_meta($comment_id, 'rating', $rating);
+                return '<div class="woocommerce-message">' . __('¡Gracias por tu reseña! Ha sido enviada y será publicada tras la aprobación.', 'woowapp-smsenlinea-pro') . '</div>';
+            } else {
+                return '<div class="woocommerce-error">' . __('Hubo un error al enviar tu reseña.', 'woowapp-smsenlinea-pro') . '</div>';
+            }
+        }
+
+        if (isset($_GET['order_id']) && isset($_GET['key'])) {
+            $order_id = absint($_GET['order_id']);
+            $order_key = sanitize_text_field($_GET['key']);
+            $order = wc_get_order($order_id);
+
+            if ($order && $order->get_order_key() === $order_key) {
+                $html = '<div class="woowapp-review-container">';
+                $html .= '<h3>' . __('Deja una reseña para los productos de tu pedido #', 'woowapp-smsenlinea-pro') . $order->get_order_number() . '</h3>';
+                
+                foreach ($order->get_items() as $item) {
+                    $product = $item->get_product();
+                    $html .= '<div class="review-form-wrapper" style="border:1px solid #ddd; padding:20px; margin-bottom:20px; border-radius: 5px;">';
+                    $html .= '<h4>' . esc_html($product->get_name()) . '</h4>';
+                    $html .= '<form method="post" class="woowapp-review-form">';
+                    $html .= '<p class="comment-form-rating"><label for="review_rating-' . $product->get_id() . '">' . __('Tu calificación', 'woowapp-smsenlinea-pro') . '&nbsp;<span class="required">*</span></label><select name="review_rating" id="review_rating-' . $product->get_id() . '" required><option value="5">★★★★★</option><option value="4">★★★★☆</option><option value="3">★★★☆☆</option><option value="2">★★☆☆☆</option><option value="1">★☆☆☆☆</option></select></p>';
+                    $html .= '<p class="comment-form-comment"><label for="review_comment-' . $product->get_id() . '">' . __('Tu reseña', 'woowapp-smsenlinea-pro') . '</label><textarea name="review_comment" id="review_comment-' . $product->get_id() . '" cols="45" rows="8"></textarea></p>';
+                    $html .= '<input type="hidden" name="review_order_id" value="' . esc_attr($order_id) . '" />';
+                    $html .= '<input type="hidden" name="review_product_id" value="' . esc_attr($product->get_id()) . '" />';
+                    $html .= wp_nonce_field('wse_submit_review', 'wse_review_nonce', true, false);
+                    $html .= '<p class="form-submit"><input name="submit" type="submit" class="submit button" value="' . __('Enviar Reseña', 'woowapp-smsenlinea-pro') . '" /></p>';
+                    $html .= '</form></div>';
+                }
+                $html .= '</div>';
+                return $html;
+            }
+        }
+
+        return '<div class="woocommerce-error">' . __('Enlace de reseña no válido o caducado.', 'woowapp-smsenlinea-pro') . '</div>';
     }
 
     /**
