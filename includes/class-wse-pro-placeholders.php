@@ -3,7 +3,7 @@
  * Maneja la lógica de reemplazo de placeholders para los mensajes y define las variables disponibles.
  *
  * @package WooWApp
- * @version 1.6.0
+ * @version 2.0.0
  */
 
 if (!defined('ABSPATH')) {
@@ -54,7 +54,6 @@ class WSE_Pro_Placeholders {
             }
         }
         
-        // Lógica mejorada para obtener el nombre del cliente
         $customer_name = $cart_row->first_name;
         if (empty($customer_name) && !empty($cart_row->checkout_data)) {
             parse_str($cart_row->checkout_data, $checkout_fields);
@@ -65,7 +64,7 @@ class WSE_Pro_Placeholders {
             if($user_info) $customer_name = $user_info->first_name;
         }
         if (empty($customer_name)) {
-            $customer_name = ''; // Valor por defecto si no se encuentra
+            $customer_name = '';
         }
 
         $recovery_link = add_query_arg('recover-cart-wse', $cart_row->recovery_token, wc_get_checkout_url());
@@ -79,7 +78,6 @@ class WSE_Pro_Placeholders {
             '{first_product_name}' => $first_product_name,
         ];
 
-        // Rellenar otros placeholders con valores vacíos para evitar que se muestren.
         $all_placeholders = self::get_all_placeholders_grouped();
         foreach($all_placeholders as $group) {
             foreach($group as $placeholder) {
@@ -176,7 +174,13 @@ class WSE_Pro_Placeholders {
         $my_account_link = wc_get_page_permalink('myaccount') ?: '';
         $payment_link = $order->get_checkout_payment_url() ?: '';
         $first_product_link = $first_product ? $first_product->get_permalink() : '';
-        $first_product_review_link = $first_product_link ? $first_product_link . '#reviews' : '';
+        
+        // Genera el enlace a la página de reseña personalizada.
+        $review_page_slug = 'escribir-resena';
+        $first_product_review_link = add_query_arg([
+            'order_id' => $order->get_id(),
+            'key'      => $order->get_order_key()
+        ], home_url('/' . $review_page_slug . '/'));
 
         $values = [
             '{shop_name}' => get_bloginfo('name'),
@@ -252,4 +256,3 @@ class WSE_Pro_Placeholders {
         ];
     }
 }
-
