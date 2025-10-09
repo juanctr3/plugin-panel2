@@ -195,11 +195,11 @@ final class WooWApp {
         $cart_row = $wpdb->get_row($wpdb->prepare("SELECT * FROM " . self::$abandoned_cart_table_name . " WHERE recovery_token = %s AND status IN ('active', 'sent')", $token));
         
         if ($cart_row) {
-            // Restaurar productos
+            // Restaurar productos al carrito
             WC()->cart->empty_cart();
             $cart_contents = maybe_unserialize($cart_row->cart_contents);
             if (is_array($cart_contents)) {
-                foreach ($cart_contents as $item) {
+                foreach ($cart_contents as $item_key => $item) {
                     WC()->cart->add_to_cart($item['product_id'], $item['quantity'], $item['variation_id'] ?? 0, $item['variation'] ?? []);
                 }
             }
@@ -207,19 +207,22 @@ final class WooWApp {
             // --- LÓGICA MEJORADA: Restaurar los datos del formulario en la sesión del cliente ---
             if (!empty($cart_row->checkout_data)) {
                 parse_str($cart_row->checkout_data, $checkout_fields);
-                $customer = WC()->customer;
-                if ($customer && is_array($checkout_fields)) {
-                    foreach ($checkout_fields as $key => $value) {
-                        // Sanitizar antes de usar
-                        $s_key = sanitize_key($key);
-                        $s_value = sanitize_text_field(wp_unslash($value));
+                
+                if (is_array($checkout_fields)) {
+                    // El objeto WC_Customer permite establecer los datos de facturación y envío
+                    $customer = WC()->customer;
+                    if ($customer) {
+                        foreach ($checkout_fields as $key => $value) {
+                            $s_key = sanitize_key($key);
+                            $s_value = is_array($value) ? array_map('sanitize_text_field', $value) : sanitize_text_field(wp_unslash($value));
 
-                        // Usar los métodos 'set' del objeto cliente de WooCommerce
-                        if (is_callable([$customer, "set_{$s_key}"])) {
-                            $customer->{"set_{$s_key}"}($s_value);
+                            // Usa los métodos 'set' del objeto cliente de WooCommerce
+                            if (is_callable([$customer, "set_{$s_key}"])) {
+                                $customer->{"set_{$s_key}"}($s_value);
+                            }
                         }
+                        $customer->save();
                     }
-                    $customer->save();
                 }
             }
             
