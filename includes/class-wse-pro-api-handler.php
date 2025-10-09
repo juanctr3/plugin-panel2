@@ -3,7 +3,7 @@
  * Maneja toda la comunicación con las APIs de SMSenlinea y la lógica de envío de mensajes.
  *
  * @package WooWApp
- * @version 1.8.0
+ * @version 1.8.2
  */
 
 if (!defined('ABSPATH')) {
@@ -299,15 +299,24 @@ class WSE_Pro_API_Handler {
         }
 
         $body = json_decode(wp_remote_retrieve_body($response), true);
+
+        // --- LÓGICA DE RESPUESTA MEJORADA ---
         $is_panel1_success = isset($body['status']) && $body['status'] === 'success';
         $is_panel2_success = isset($body['success']) && $body['success'] === true;
+        // ARREGLO: Considerar el mensaje "queued" del Panel 1 como un éxito.
+        $is_panel1_queued_success = isset($body['message']) && $body['message'] === 'WhatsApp chat has been queued for sending!';
 
-        if ($is_panel1_success || $is_panel2_success) {
+        if ($is_panel1_success || $is_panel2_success || $is_panel1_queued_success) {
             $message_id = $body['data']['messageId'] ?? $body['data']['id'] ?? 'N/A';
             $note = sprintf(__('Notificación WhatsApp enviada a %s (%s).', 'woowapp-smsenlinea-pro'), $recipient_log, $phone);
             $this->log(sprintf('Éxito (Ref: %s, Tel: %s, Dest: %s). ID: %s', $order_id_log, $phone, $recipient_log, $message_id));
             if($data_source && is_a($data_source, 'WC_Order')) $data_source->add_order_note($note);
-            return ['success' => true, 'message' => __('Enviado exitosamente.', 'woowapp-smsenlinea-pro')];
+            
+            // Personaliza el mensaje de éxito si fue encolado
+            $success_message = $is_panel1_queued_success ? __('Mensaje encolado para envío.', 'woowapp-smsenlinea-pro') : __('Enviado exitosamente.', 'woowapp-smsenlinea-pro');
+            
+            return ['success' => true, 'message' => $success_message];
+
         } else {
             $error = $body['solution'] ?? $body['message'] ?? __('Error desconocido', 'woowapp-smsenlinea-pro');
             $note = sprintf(__('Fallo al enviar WhatsApp a %s (%s). Razón: %s', 'woowapp-smsenlinea-pro'), $recipient_log, $phone, $error);
