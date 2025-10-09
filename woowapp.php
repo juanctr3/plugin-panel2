@@ -3,7 +3,7 @@
  * Plugin Name:       WooWApp
  * Plugin URI:        https://smsenlinea.com
  * Description:       Una solución robusta para enviar notificaciones de WhatsApp a los clientes de WooCommerce utilizando la API de SMSenlinea. Incluye recordatorios de reseñas y recuperación de carritos abandonados.
- * Version:           2.1.0
+ * Version:           2.1.1
  * Author:            smsenlinea
  * Author URI:        https://smsenlinea.com
  * License:           GPL-2.0+
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
     exit; // Exit if accessed directly.
 }
 
-define('WSE_PRO_VERSION', '2.1.0');
+define('WSE_PRO_VERSION', '2.1.1');
 define('WSE_PRO_PATH', plugin_dir_path(__FILE__));
 define('WSE_PRO_URL', plugin_dir_url(__FILE__));
 
@@ -51,7 +51,7 @@ final class WooWApp {
     }
 
     /**
-     * Se ejecuta al activar el plugin para crear la tabla y la página de reseñas.
+     * Se ejecuta al activar el plugin para crear la tabla, la página y refrescar los permalinks.
      */
     public static function on_activation() {
         global $wpdb;
@@ -90,7 +90,14 @@ final class WooWApp {
                 'post_content' => '',
             ]);
         }
+
+        // --- INICIO DE LA CORRECCIÓN ---
+        // Refresca las reglas de reescritura de WordPress para que reconozca la nueva página.
+        flush_rewrite_rules();
+        // --- FIN DE LA CORRECCIÓN ---
     }
+
+    // ... (El resto del archivo no necesita cambios, lo incluyo completo para tu comodidad)
 
     /**
      * Inicializador principal del plugin.
