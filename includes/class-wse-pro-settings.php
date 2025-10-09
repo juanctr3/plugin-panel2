@@ -2,13 +2,104 @@
 /**
  * Maneja la creación de la página de ajustes para WooWApp.
  * @package WooWApp
- * @version 1.8.0 // Version incrementada
+ * @version 1.8.0
  */
 if (!defined('ABSPATH')) exit;
 
 class WSE_Pro_Settings {
 
-    // ... (El resto de la clase permanece igual hasta get_administration_settings) ...
+    public function __construct() {
+        add_filter('woocommerce_settings_tabs_array', [$this, 'add_settings_tab'], 50);
+        add_action('woocommerce_settings_tabs_woowapp', [$this, 'settings_tab_content']);
+        add_action('woocommerce_update_options_woowapp', [$this, 'update_settings']);
+        add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_scripts']);
+        add_action('wp_ajax_wse_pro_send_test', [WSE_Pro_API_Handler::class, 'ajax_send_test_whatsapp']);
+        add_action('woocommerce_admin_field_textarea_with_pickers', [$this, 'render_textarea_with_pickers']);
+        add_filter('woocommerce_settings_api_sanitized_fields_woowapp', [$this, 'sanitize_textarea_fields']);
+    }
+
+    /**
+     * Añade la pestaña principal del plugin a los ajustes de WooCommerce.
+     *
+     * @param array $settings_tabs Array de pestañas de ajustes de WooCommerce.
+     * @return array Array de pestañas modificado.
+     */
+    public function add_settings_tab($settings_tabs) {
+        $settings_tabs['woowapp'] = __('WooWApp', 'woowapp-smsenlinea-pro');
+        return $settings_tabs;
+    }
+
+    /**
+     * Muestra el contenido de la pestaña, incluyendo la navegación por sub-pestañas.
+     */
+    public function settings_tab_content() {
+        $current_section = isset($_GET['section']) ? sanitize_key($_GET['section']) : 'administration';
+        $tabs = [
+            'administration'    => __('Administración', 'woowapp-smsenlinea-pro'),
+            'admin_messages'    => __('Mensajes Admin', 'woowapp-smsenlinea-pro'),
+            'customer_messages' => __('Mensajes Cliente', 'woowapp-smsenlinea-pro'),
+            'notifications'     => __('Notificaciones', 'woowapp-smsenlinea-pro'),
+        ];
+
+        echo '<h2 class="nav-tab-wrapper woo-nav-tab-wrapper">';
+        foreach ($tabs as $id => $name) {
+            $class = ($current_section === $id) ? 'nav-tab-active' : '';
+            echo '<a href="' . esc_url(admin_url('admin.php?page=wc-settings&tab=woowapp&section=' . $id)) . '" class="nav-tab ' . esc_attr($class) . '">' . esc_html($name) . '</a>';
+        }
+        echo '</h2>';
+
+        woocommerce_admin_fields($this->get_settings($current_section));
+    }
+
+    /**
+     * Guarda los ajustes de la sub-pestaña activa.
+     */
+    public function update_settings() {
+        $current_section = isset($_GET['section']) ? sanitize_key($_GET['section']) : 'administration';
+        woocommerce_update_options($this->get_settings($current_section));
+    }
+
+    /**
+     * Sanitiza los campos textarea para preservar saltos de línea al guardar.
+     *
+     * @param array $sanitized_settings Ajustes sanitizados.
+     * @return array Ajustes sanitizados con textareas procesados.
+     */
+	public function sanitize_textarea_fields($sanitized_settings) {
+        $all_settings = $this->get_settings(true);
+        foreach ($all_settings as $setting) {
+            if (isset($setting['id'], $setting['type']) && in_array($setting['type'], ['textarea', 'textarea_with_pickers'])) {
+                $option_id = $setting['id'];
+                if (isset($_POST[$option_id])) {
+                    $sanitized_settings[$option_id] = sanitize_textarea_field(wp_unslash($_POST[$option_id]));
+                }
+            }
+        }
+        return $sanitized_settings;
+    }
+
+    /**
+     * Obtiene el array de ajustes correspondiente a la sub-pestaña activa.
+     *
+     * @param string|bool $section La sección actual o true para obtener todos los ajustes.
+     * @return array
+     */
+    public function get_settings($section = '') {
+        if ($section === true) { // Devuelve todos los ajustes para la sanitización
+            return array_merge(
+                $this->get_administration_settings(),
+                $this->get_admin_messages_settings(),
+                $this->get_customer_messages_settings(),
+                $this->get_notifications_settings()
+            );
+        }
+        switch ($section) {
+            case 'admin_messages': return $this->get_admin_messages_settings();
+            case 'customer_messages': return $this->get_customer_messages_settings();
+            case 'notifications': return $this->get_notifications_settings();
+            default: return $this->get_administration_settings();
+        }
+    }
 
     /**
      * Define los ajustes para la pestaña "Administración".
@@ -18,7 +109,7 @@ class WSE_Pro_Settings {
         $log_url = admin_url('admin.php?page=wc-status&tab=logs');
         $log_handle = WSE_Pro_API_Handler::$log_handle;
 
-        $panel1_docs_url = 'https://documenter.getpostman.com/view/20356708/2s93zB5c3s#intro'; // URL de referencia
+        $panel1_docs_url = 'https://documenter.getpostman.com/view/20356708/2s93zB5c3s#intro';
         $panel2_login_url = 'https://app.smsenlinea.com/login';
 
         return [
@@ -55,7 +146,7 @@ class WSE_Pro_Settings {
                 'custom_attributes' => ['data-panel' => 'panel2'],
             ],
 
-            // --- NUEVO: CAMPOS CORREGIDOS PARA API PANEL 1 ---
+            // --- CAMPOS PARA API PANEL 1 ---
             [
                 'name' => __('API Secret (Panel 1)', 'woowapp-smsenlinea-pro'), 
                 'type' => 'text', 
@@ -256,5 +347,4 @@ class WSE_Pro_Settings {
             'nonce'    => wp_create_nonce('wse_pro_send_test_nonce')
         ]);
     }
-
 }
