@@ -1,9 +1,9 @@
 <?php
 /**
- * Maneja toda la comunicación con la API de SMSenlinea y la lógica de envío de mensajes.
+ * Maneja toda la comunicación con las APIs de SMSenlinea y la lógica de envío de mensajes.
  *
  * @package WooWApp
- * @version 1.5.0
+ * @version 1.8.0
  */
 
 if (!defined('ABSPATH')) {
@@ -17,21 +17,19 @@ class WSE_Pro_API_Handler {
 
     /**
      * Identificador para los registros de WooCommerce.
-     *
      * @var string
      */
     public static $log_handle = 'wse-pro';
 
     /**
-     * URL de la API para enviar mensajes.
-     *
+     * URLs de las APIs.
      * @var string
      */
-    private $api_url = 'https://api.smsenlinea.com/api/qr/rest/send_message';
+    private $api_url_panel1_base = 'https://whatsapp.smsenlinea.com/api/send/';
+    private $api_url_panel2 = 'https://api.smsenlinea.com/api/qr/rest/send_message';
 
     /**
      * Array de códigos de país.
-     *
      * @var array
      */
     private $country_codes = [];
@@ -114,7 +112,7 @@ class WSE_Pro_API_Handler {
     }
 
     /**
-     * Envía un mensaje. Función centralizada que maneja diferentes fuentes de datos (pedidos, carritos).
+     * Envía un mensaje. Función centralizada que elige el panel y método correctos.
      *
      * @param string $phone       Número de teléfono de destino.
      * @param string $message     El mensaje a enviar.
@@ -123,26 +121,106 @@ class WSE_Pro_API_Handler {
      * @return array              Respuesta de la operación.
      */
     public function send_message($phone, $message, $data_source = null, $type = 'customer') {
-        $token = get_option('wse_pro_api_token');
-        $from = get_option('wse_pro_from_number');
-
+        $selected_panel = get_option('wse_pro_api_panel_selection', 'panel2');
+        
         $country = ($data_source && is_a($data_source, 'WC_Order') && 'customer' === $type) ? $data_source->get_billing_country() : '';
         $full_phone = $this->format_phone($phone, $country);
         
         if (empty($full_phone) || empty($message)) {
             return ['success' => false, 'message' => __('Número de teléfono o mensaje vacío.', 'woowapp-smsenlinea-pro')];
         }
-        if (empty($token) || empty($from)) {
-            $this->log(__('Envío cancelado: Faltan credenciales de API.', 'woowapp-smsenlinea-pro'));
-            if ($data_source && is_a($data_source, 'WC_Order')) {
-                $data_source->add_order_note(__('Error WhatsApp: Faltan credenciales de API.', 'woowapp-smsenlinea-pro'));
+
+        if ($selected_panel === 'panel1') {
+            return $this->send_via_panel1($full_phone, $message, $data_source, $type);
+        } else {
+            return $this->send_via_panel2($full_phone, $message, $data_source, $type);
+        }
+    }
+    
+    /**
+     * Envía mensaje usando la API del Panel 1 (Clásico) según la documentación.
+     *
+     * @param string $phone       Número de teléfono formateado.
+     * @param string $message     Mensaje a enviar.
+     * @param mixed  $data_source Fuente de datos.
+     * @param string $type        Tipo de destinatario.
+     * @return array
+     */
+    private function send_via_panel1($phone, $message, $data_source, $type) {
+        $secret = get_option('wse_pro_api_secret_panel1');
+        $message_type = get_option('wse_pro_message_type_panel1', 'whatsapp');
+
+        if (empty($secret)) {
+            $this->log(__('Envío (Panel 1) cancelado: Falta API Secret.', 'woowapp-smsenlinea-pro'));
+            return ['success' => false, 'message' => __('Falta el API Secret del Panel 1.', 'woowapp-smsenlinea-pro')];
+        }
+        
+        $body = ['secret' => $secret];
+        $endpoint_url = '';
+
+        if ($message_type === 'whatsapp') {
+            $endpoint_url = $this->api_url_panel1_base . 'whatsapp';
+            $account_id = get_option('wse_pro_whatsapp_account_panel1');
+
+            if (empty($account_id)) {
+                return ['success' => false, 'message' => __('Falta el WhatsApp Account ID.', 'woowapp-smsenlinea-pro')];
             }
-            return ['success' => false, 'message' => __('Faltan credenciales de API.', 'woowapp-smsenlinea-pro')];
+
+            $body['account'] = $account_id;
+            $body['recipient'] = $phone;
+            $body['type'] = 'text';
+            $body['message'] = str_replace('{product_image_url}', '', $message);
+
+        } else { // SMS
+            $endpoint_url = $this->api_url_panel1_base . 'sms';
+            $mode = get_option('wse_pro_sms_mode_panel1', 'devices');
+            $device_id = get_option('wse_pro_sms_device_panel1');
+
+            if (empty($device_id)) {
+                return ['success' => false, 'message' => __('Falta el Device / Gateway ID.', 'woowapp-smsenlinea-pro')];
+            }
+
+            $body['mode'] = $mode;
+            $body['phone'] = $phone;
+            $body['message'] = str_replace('{product_image_url}', '', $message);
+            if ($mode === 'devices') {
+                $body['device'] = $device_id;
+            } else {
+                $body['gateway'] = $device_id;
+            }
+        }
+
+        $response = wp_remote_post($endpoint_url, [
+            'body' => $body,
+            'timeout' => 30
+        ]);
+
+        return $this->handle_response($response, $phone, $data_source, $type);
+    }
+
+    /**
+     * Envía mensaje usando la API del Panel 2 (QR).
+     *
+     * @param string $phone       Número de teléfono formateado.
+     * @param string $message     Mensaje a enviar.
+     * @param mixed  $data_source Fuente de datos.
+     * @param string $type        Tipo de destinatario.
+     * @return array
+     */
+    private function send_via_panel2($phone, $message, $data_source, $type) {
+        $token = get_option('wse_pro_api_token');
+        $from = get_option('wse_pro_from_number');
+
+        if (empty($token) || empty($from)) {
+            $this->log(__('Envío (Panel 2) cancelado: Faltan credenciales.', 'woowapp-smsenlinea-pro'));
+            if ($data_source && is_a($data_source, 'WC_Order')) {
+                $data_source->add_order_note(__('Error WhatsApp: Faltan credenciales de API Panel 2.', 'woowapp-smsenlinea-pro'));
+            }
+            return ['success' => false, 'message' => __('Faltan credenciales de API Panel 2.', 'woowapp-smsenlinea-pro')];
         }
 
         $image_url = '';
         $attach_image = 'no';
-
         if ($data_source) {
             if (is_a($data_source, 'WC_Order')) {
                 $attach_image = get_option('wse_pro_attach_product_image', 'no');
@@ -159,8 +237,7 @@ class WSE_Pro_API_Handler {
         
         $message_type = (!empty($image_url) && 'yes' === $attach_image) ? 'image' : 'text';
 
-        $body = ['requestType' => 'POST', 'token' => $token, 'from' => $from, 'to' => $full_phone];
-
+        $body = ['requestType' => 'POST', 'token' => $token, 'from' => $from, 'to' => $phone];
         if ('image' === $message_type) {
             $body['messageType'] = 'image';
             $body['imageUrl'] = $image_url;
@@ -170,9 +247,9 @@ class WSE_Pro_API_Handler {
             $body['text'] = str_replace('{product_image_url}', '', $message);
         }
 
-        $response = wp_remote_post($this->api_url, ['body' => wp_json_encode($body), 'headers' => ['Content-Type' => 'application/json'], 'timeout' => 30]);
+        $response = wp_remote_post($this->api_url_panel2, ['body' => wp_json_encode($body), 'headers' => ['Content-Type' => 'application/json'], 'timeout' => 30]);
 
-        return $this->handle_response($response, $full_phone, $data_source, $type);
+        return $this->handle_response($response, $phone, $data_source, $type);
     }
     
     /**
@@ -222,9 +299,13 @@ class WSE_Pro_API_Handler {
         }
 
         $body = json_decode(wp_remote_retrieve_body($response), true);
-        if (!empty($body['success'])) {
+        $is_panel1_success = isset($body['status']) && $body['status'] === 'success';
+        $is_panel2_success = isset($body['success']) && $body['success'] === true;
+
+        if ($is_panel1_success || $is_panel2_success) {
+            $message_id = $body['data']['messageId'] ?? $body['data']['id'] ?? 'N/A';
             $note = sprintf(__('Notificación WhatsApp enviada a %s (%s).', 'woowapp-smsenlinea-pro'), $recipient_log, $phone);
-            $this->log(sprintf('Éxito (Ref: %s, Tel: %s, Dest: %s). ID: %s', $order_id_log, $phone, $recipient_log, $body['data']['messageId'] ?? 'N/A'));
+            $this->log(sprintf('Éxito (Ref: %s, Tel: %s, Dest: %s). ID: %s', $order_id_log, $phone, $recipient_log, $message_id));
             if($data_source && is_a($data_source, 'WC_Order')) $data_source->add_order_note($note);
             return ['success' => true, 'message' => __('Enviado exitosamente.', 'woowapp-smsenlinea-pro')];
         } else {
@@ -253,9 +334,21 @@ class WSE_Pro_API_Handler {
      */
     public static function ajax_send_test_whatsapp() {
         check_ajax_referer('wse_pro_send_test_nonce', 'security');
+        
         $handler = new self();
         $test_number = isset($_POST['test_number']) ? sanitize_text_field($_POST['test_number']) : '';
-        $test_message = "✅ " . __('¡Mensaje de prueba desde tu tienda! La API de SMSenlinea funciona.', 'woowapp-smsenlinea-pro');
+        $selected_panel = get_option('wse_pro_api_panel_selection', 'panel2');
+        
+        $panel_name = $selected_panel === 'panel1' ? 'Panel 1' : 'Panel 2';
+        $message_type = get_option('wse_pro_message_type_panel1', 'whatsapp');
+        $channel_name = ($selected_panel === 'panel1') ? strtoupper($message_type) : 'WhatsApp';
+
+        $test_message = "✅ " . sprintf(
+            __('¡Mensaje de prueba (%s) desde tu tienda! La API de %s funciona.', 'woowapp-smsenlinea-pro'),
+            $channel_name,
+            $panel_name
+        );
+        
         $result = $handler->send_message($test_number, $test_message, null, 'test');
         wp_send_json_success($result);
     }
