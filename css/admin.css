@@ -1,1 +1,73 @@
+/* --- NUEVO: Estilos para el layout de dos columnas --- */
+.wse-pro-field-wrapper {
+    display: flex;
+    align-items: flex-start;
+    gap: 20px;
+}
 
+.wse-pro-textarea-container {
+    flex: 3; /* El textarea ocupa 3 partes del espacio */
+}
+
+.wse-pro-pickers-container {
+    flex: 2; /* Los pickers ocupan 2 partes del espacio */
+    min-width: 280px;
+}
+
+/* --- Estilos del Acordeón (Ajustados) --- */
+.wc-wa-accordion-trigger {
+    background-color: #f0f0f1;
+    border: 1px solid #ddd;
+    padding: 8px 12px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-radius: 4px;
+    margin-top: 0; /* Se ajusta el margen */
+}
+
+.wc-wa-accordion-trigger:hover {
+    background-color: #e0e0e1;
+}
+
+/* --- CORRECCIÓN: Asegura que el acordeón esté cerrado por defecto --- */
+.wc-wa-accordion-content {
+    display: none; /* ESTA LÍNEA ES LA CLAVE */
+    padding: 15px;
+    border: 1px solid #ddd;
+    border-top: none;
+    background: #fff;
+    border-bottom-left-radius: 4px;
+    border-bottom-right-radius: 4px;
+    max-height: 250px; /* Altura máxima para evitar que sea muy largo */
+    overflow-y: auto; /* Scroll si el contenido es muy largo */
+}
+
+.wc-wa-picker-group {
+    margin-bottom: 15px;
+}
+
+.picker-subgroup {
+    margin-top: 5px;
+}
+
+.picker-subgroup em {
+    font-size: 12px;
+    color: #555;
+}
+
+.wc-wa-picker-group button {
+    margin: 2px !important;
+}
+
+.wc-wa-picker-group button.emoji-btn {
+    font-size: 16px;
+    padding: 2px 6px;
+    line-height: 1;
+}
+
+#test_send_status {
+    margin-left: 10px;
+    vertical-align: middle;
+}
