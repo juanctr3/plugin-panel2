@@ -3,7 +3,7 @@
  * Maneja la lógica de reemplazo de placeholders para los mensajes y define las variables disponibles.
  *
  * @package WooWApp
- * @version 1.6.1
+ * @version 1.9.0
  */
 
 if (!defined('ABSPATH')) {
@@ -17,7 +17,7 @@ class WSE_Pro_Placeholders {
 
     /**
      * Reemplaza todos los placeholders en una plantilla con datos de un pedido.
-     * * @param string   $template La plantilla con placeholders.
+     * @param string   $template La plantilla con placeholders.
      * @param WC_Order $order    El objeto del pedido.
      * @param array    $extras   Placeholders adicionales (ej. para notas).
      * @return string            La plantilla con los valores reemplazados.
@@ -29,7 +29,7 @@ class WSE_Pro_Placeholders {
     
     /**
      * Reemplaza placeholders para mensajes de carritos abandonados.
-     * * @param string   $template La plantilla del mensaje.
+     * @param string   $template La plantilla del mensaje.
      * @param stdClass $cart_row El objeto de la fila de la base de datos del carrito.
      * @return string            El mensaje con los valores reemplazados.
      */
@@ -40,25 +40,32 @@ class WSE_Pro_Placeholders {
 
         if (is_array($cart_contents)) {
             $first_item = reset($cart_contents);
-            if ($first_item && isset($first_item['data'])) {
+            if ($first_item && isset($first_item['data']) && is_object($first_item['data'])) {
                 $first_product_name = $first_item['data']->get_name();
             }
 
             foreach ($cart_contents as $item) {
-                $product_name = $item['data']->get_name();
-                $quantity = $item['quantity'];
-                $line_total = self::clean_for_whatsapp(wc_price($item['line_total']));
-                $items_list .= '  - ' . $product_name . ' (x' . $quantity . ") - " . $line_total . "\n";
+                if (isset($item['data']) && is_object($item['data'])) {
+                    $product_name = $item['data']->get_name();
+                    $quantity = $item['quantity'];
+                    $line_total = self::clean_for_whatsapp(wc_price($item['line_total']));
+                    $items_list .= '  - ' . $product_name . ' (x' . $quantity . ") - " . $line_total . "\n";
+                }
             }
         }
         
+        // Lógica mejorada para obtener el nombre del cliente
         $customer_name = $cart_row->first_name;
+        if (empty($customer_name) && !empty($cart_row->checkout_data)) {
+            parse_str($cart_row->checkout_data, $checkout_fields);
+            $customer_name = $checkout_fields['billing_first_name'] ?? '';
+        }
         if (empty($customer_name) && $cart_row->user_id) {
             $user_info = get_userdata($cart_row->user_id);
             if($user_info) $customer_name = $user_info->first_name;
         }
         if (empty($customer_name)) {
-            $customer_name = '';
+            $customer_name = ''; // Valor por defecto si no se encuentra
         }
 
         $recovery_link = add_query_arg('recover-cart-wse', $cart_row->recovery_token, wc_get_checkout_url());
@@ -69,10 +76,10 @@ class WSE_Pro_Placeholders {
             '{cart_items}'         => trim($items_list),
             '{cart_total}'         => self::clean_for_whatsapp(wc_price($cart_row->cart_total)),
             '{checkout_link}'      => $recovery_link,
-            '{first_product_name}' => $first_product_name, // Corrección
+            '{first_product_name}' => $first_product_name,
         ];
 
-        // Rellenar otros placeholders con valores vacíos.
+        // Rellenar otros placeholders con valores vacíos para evitar que se muestren.
         $all_placeholders = self::get_all_placeholders_grouped();
         foreach($all_placeholders as $group) {
             foreach($group as $placeholder) {
@@ -87,7 +94,7 @@ class WSE_Pro_Placeholders {
 
     /**
      * Limpia una cadena de texto para ser segura y legible en WhatsApp.
-     * * @param string $string El texto a limpiar.
+     * @param string $string El texto a limpiar.
      * @return string        El texto limpio.
      */
     private static function clean_for_whatsapp($string) {
@@ -100,7 +107,7 @@ class WSE_Pro_Placeholders {
 
     /**
      * Obtiene la URL de la imagen del primer producto de un PEDIDO.
-     * * @param WC_Order $order El objeto del pedido.
+     * @param WC_Order $order El objeto del pedido.
      * @return string         La URL de la imagen o una cadena vacía.
      */
     public static function get_first_product_image_url($order) {
@@ -122,7 +129,7 @@ class WSE_Pro_Placeholders {
 
     /**
      * Obtiene la URL de la imagen del primer producto de un CARRITO.
-     * * @param string $cart_contents Contenido del carrito serializado.
+     * @param string $cart_contents Contenido del carrito serializado.
      * @return string                 La URL de la imagen o una cadena vacía.
      */
     public static function get_first_cart_item_image_url($cart_contents) {
@@ -145,7 +152,7 @@ class WSE_Pro_Placeholders {
     
     /**
      * Construye el array de valores para todos los placeholders a partir de un pedido.
-     * * @param WC_Order $order El objeto del pedido.
+     * @param WC_Order $order El objeto del pedido.
      * @param array    $extras Placeholders adicionales.
      * @return array           Un array asociativo de placeholder => valor.
      */
@@ -224,7 +231,7 @@ class WSE_Pro_Placeholders {
             __('Cliente', 'woowapp-smsenlinea-pro') => ['{customer_name}', '{customer_lastname}', '{customer_fullname}', '{billing_email}', '{billing_phone}', '{customer_note}'],
             __('Direcciones', 'woowapp-smsenlinea-pro') => ['{billing_address}', '{shipping_address}'],
             __('Producto (Primer Ítem)', 'woowapp-smsenlinea-pro') => ['{first_product_name}', '{first_product_link}', '{first_product_review_link}', '{product_image_url}'],
-            __('Carrito Abandonado', 'woowapp-smsenlinea-pro') => ['{cart_items}', '{cart_total}', '{checkout_link}']
+            __('Carrito Abandonado', 'woowapp-smsenlinea-pro') => ['{cart_items}', '{cart_total}', '{checkout_link}', '{customer_name}']
         ];
     }
     
