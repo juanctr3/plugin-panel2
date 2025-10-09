@@ -3,7 +3,7 @@
  * Plugin Name:       WooWApp
  * Plugin URI:        https://smsenlinea.com
  * Description:       Una solución robusta para enviar notificaciones de WhatsApp a los clientes de WooCommerce utilizando la API de SMSenlinea. Incluye recordatorios de reseñas y recuperación de carritos abandonados.
- * Version:           2.0.0
+ * Version:           2.1.0
  * Author:            smsenlinea
  * Author URI:        https://smsenlinea.com
  * License:           GPL-2.0+
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
     exit; // Exit if accessed directly.
 }
 
-define('WSE_PRO_VERSION', '2.0.0');
+define('WSE_PRO_VERSION', '2.1.0');
 define('WSE_PRO_PATH', plugin_dir_path(__FILE__));
 define('WSE_PRO_URL', plugin_dir_url(__FILE__));
 
@@ -54,7 +54,6 @@ final class WooWApp {
      * Se ejecuta al activar el plugin para crear la tabla y la página de reseñas.
      */
     public static function on_activation() {
-        // --- 1. Crear la tabla de carritos abandonados ---
         global $wpdb;
         $table_name = $wpdb->prefix . 'wse_pro_abandoned_carts';
         $charset_collate = $wpdb->get_charset_collate();
@@ -81,7 +80,6 @@ final class WooWApp {
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
         dbDelta($sql);
 
-        // --- 2. Crear la página de reseñas automáticamente ---
         $review_page_slug = 'escribir-resena';
         if (null === get_page_by_path($review_page_slug)) {
             wp_insert_post([
@@ -138,6 +136,8 @@ final class WooWApp {
         }
 
         add_filter('the_content', [$this, 'handle_custom_review_page_content']);
+        add_filter('woocommerce_order_actions', [$this, 'add_manual_review_request_action']);
+        add_action('woocommerce_order_action_wse_send_review_request', [$this, 'process_manual_review_request_action']);
     }
 
     /**
@@ -392,6 +392,24 @@ final class WooWApp {
         }
 
         return '<div class="woocommerce-error">' . __('Enlace de reseña no válido o caducado.', 'woowapp-smsenlinea-pro') . '</div>';
+    }
+
+    /**
+     * Añade la opción "Enviar solicitud de reseña" al menú de acciones del pedido.
+     */
+    public function add_manual_review_request_action($actions) {
+        $actions['wse_send_review_request'] = __('Enviar solicitud de reseña por WhatsApp/SMS', 'woowapp-smsenlinea-pro');
+        return $actions;
+    }
+
+    /**
+     * Procesa la acción manual de envío de solicitud de reseña.
+     */
+    public function process_manual_review_request_action($order) {
+        $this->send_review_reminder_notification($order->get_id());
+        $order->add_order_note(
+            __('Solicitud de reseña enviada manualmente al cliente.', 'woowapp-smsenlinea-pro')
+        );
     }
 
     /**
