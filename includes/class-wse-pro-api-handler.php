@@ -3,7 +3,7 @@
  * Maneja toda la comunicación con las APIs de SMSenlinea y la lógica de envío de mensajes.
  *
  * @package WooWApp
- * @version 1.8.2
+ * @version 1.6.0
  */
 
 if (!defined('ABSPATH')) {
@@ -168,8 +168,26 @@ class WSE_Pro_API_Handler {
 
             $body['account'] = $account_id;
             $body['recipient'] = $phone;
-            $body['type'] = 'text';
-            $body['message'] = str_replace('{product_image_url}', '', $message);
+
+            $image_url = '';
+            $attach_image = get_option('wse_pro_attach_product_image', 'no');
+            if ($data_source && 'yes' === $attach_image) {
+                if (is_a($data_source, 'WC_Order')) {
+                    $image_url = WSE_Pro_Placeholders::get_first_product_image_url($data_source);
+                } elseif (isset($data_source->cart_contents)) {
+                    $image_url = WSE_Pro_Placeholders::get_first_cart_item_image_url($data_source->cart_contents);
+                }
+            }
+            
+            if (!empty($image_url)) {
+                $body['type'] = 'media';
+                $body['message'] = str_replace('{product_image_url}', '', $message);
+                $body['media_url'] = $image_url;
+                $body['media_type'] = 'image';
+            } else {
+                $body['type'] = 'text';
+                $body['message'] = str_replace('{product_image_url}', '', $message);
+            }
 
         } else { // SMS
             $endpoint_url = $this->api_url_panel1_base . 'sms';
@@ -299,11 +317,9 @@ class WSE_Pro_API_Handler {
         }
 
         $body = json_decode(wp_remote_retrieve_body($response), true);
-
-        // --- LÓGICA DE RESPUESTA MEJORADA ---
+        
         $is_panel1_success = isset($body['status']) && $body['status'] === 'success';
         $is_panel2_success = isset($body['success']) && $body['success'] === true;
-        // ARREGLO: Considerar el mensaje "queued" del Panel 1 como un éxito.
         $is_panel1_queued_success = isset($body['message']) && $body['message'] === 'WhatsApp chat has been queued for sending!';
 
         if ($is_panel1_success || $is_panel2_success || $is_panel1_queued_success) {
@@ -312,7 +328,6 @@ class WSE_Pro_API_Handler {
             $this->log(sprintf('Éxito (Ref: %s, Tel: %s, Dest: %s). ID: %s', $order_id_log, $phone, $recipient_log, $message_id));
             if($data_source && is_a($data_source, 'WC_Order')) $data_source->add_order_note($note);
             
-            // Personaliza el mensaje de éxito si fue encolado
             $success_message = $is_panel1_queued_success ? __('Mensaje encolado para envío.', 'woowapp-smsenlinea-pro') : __('Enviado exitosamente.', 'woowapp-smsenlinea-pro');
             
             return ['success' => true, 'message' => $success_message];
