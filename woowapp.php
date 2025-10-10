@@ -321,7 +321,20 @@ final class WooWApp {
                 $delay = (int) get_option('wse_pro_abandoned_cart_time_' . $i, 60);
                 $unit = get_option('wse_pro_abandoned_cart_unit_' . $i, 'minutes');
                 
-                $seconds = $unit === 'hours' ? $delay * HOUR_IN_SECONDS : $delay * MINUTE_IN_SECONDS;
+                // Calcular segundos según la unidad
+                switch ($unit) {
+                    case 'days':
+                        $seconds = $delay * DAY_IN_SECONDS;
+                        break;
+                    case 'hours':
+                        $seconds = $delay * HOUR_IN_SECONDS;
+                        break;
+                    case 'minutes':
+                    default:
+                        $seconds = $delay * MINUTE_IN_SECONDS;
+                        break;
+                }
+                
                 $times[$i] = $now + $seconds;
             }
         }
