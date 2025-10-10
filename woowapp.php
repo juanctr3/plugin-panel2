@@ -3,7 +3,7 @@
  * Plugin Name:       WooWApp
  * Plugin URI:        https://smsenlinea.com
  * Description:       Una solución robusta para enviar notificaciones de WhatsApp a los clientes de WooCommerce utilizando la API de SMSenlinea. Incluye recordatorios de reseñas y recuperación de carritos abandonados.
- * Version:           2.1.3
+ * Version:           2.1.4
  * Author:            smsenlinea
  * Author URI:        https://smsenlinea.com
  * License:           GPL-2.0+
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
     exit; // Exit if accessed directly.
 }
 
-define('WSE_PRO_VERSION', '2.1.3');
+define('WSE_PRO_VERSION', '2.1.4');
 define('WSE_PRO_PATH', plugin_dir_path(__FILE__));
 define('WSE_PRO_URL', plugin_dir_url(__FILE__));
 
@@ -100,7 +100,7 @@ final class WooWApp {
                 'post_name'    => $review_page_slug,
                 'post_status'  => 'publish',
                 'post_type'    => 'page',
-                'post_content' => '[woowapp_review_form]', // Shortcode para mayor control
+                'post_content' => '[woowapp_review_form]',
             ]);
             
             if ($page_id && !is_wp_error($page_id)) {
@@ -185,6 +185,9 @@ final class WooWApp {
             add_action('woocommerce_new_order', [$this, 'cancel_abandoned_cart_reminder'], 10, 1);
             add_action('wse_pro_send_abandoned_cart_event', [$this, 'send_abandoned_cart_notification'], 10, 1);
             add_action('template_redirect', [$this, 'handle_cart_recovery_link']);
+            
+            // NUEVO: Hooks para prellenar los campos del checkout
+            add_filter('woocommerce_checkout_get_value', [$this, 'populate_checkout_fields'], 10, 2);
         }
 
         // Registrar el shortcode para el formulario de reseñas
@@ -258,44 +261,129 @@ final class WooWApp {
     }
 
     /**
-     * Procesa el enlace de recuperación, restaura el carrito y los datos, y redirige al checkout.
+     * MEJORADO: Procesa el enlace de recuperación, restaura el carrito y los datos, y redirige al checkout.
      */
     public function handle_cart_recovery_link() {
-        // Usar $_GET directamente para parámetros de query string
         if (!isset($_GET['recover-cart-wse'])) return;
 
         global $wpdb;
         $token = sanitize_text_field($_GET['recover-cart-wse']);
         $cart_row = $wpdb->get_row($wpdb->prepare("SELECT * FROM " . self::$abandoned_cart_table_name . " WHERE recovery_token = %s AND status IN ('active', 'sent')", $token));
         
-        if ($cart_row) {
-            WC()->cart->empty_cart();
-            $cart_contents = maybe_unserialize($cart_row->cart_contents);
-            if (is_array($cart_contents)) {
-                foreach ($cart_contents as $item_key => $item) {
-                    WC()->cart->add_to_cart($item['product_id'], $item['quantity'], $item['variation_id'] ?? 0, $item['variation'] ?? []);
-                }
-            }
+        if (!$cart_row) {
+            return;
+        }
 
-            if (!empty($cart_row->checkout_data)) {
-                parse_str($cart_row->checkout_data, $checkout_fields);
+        // 1. Restaurar los productos del carrito
+        WC()->cart->empty_cart();
+        $cart_contents = maybe_unserialize($cart_row->cart_contents);
+        if (is_array($cart_contents)) {
+            foreach ($cart_contents as $item_key => $item) {
+                WC()->cart->add_to_cart(
+                    $item['product_id'], 
+                    $item['quantity'], 
+                    $item['variation_id'] ?? 0, 
+                    $item['variation'] ?? []
+                );
+            }
+        }
+
+        // 2. MEJORADO: Restaurar los datos del checkout en la sesión
+        if (!empty($cart_row->checkout_data)) {
+            parse_str($cart_row->checkout_data, $checkout_fields);
+            
+            if (is_array($checkout_fields) && !empty($checkout_fields)) {
+                // Guardar los datos en la sesión de WooCommerce
+                WC()->session->set('wse_pro_recovered_checkout_data', $checkout_fields);
+                
+                // También intentar actualizar el objeto customer
                 $customer = WC()->customer;
-                if ($customer && is_array($checkout_fields)) {
-                    foreach ($checkout_fields as $key => $value) {
-                        $s_key = sanitize_key($key);
-                        $s_value = is_array($value) ? array_map('sanitize_text_field', $value) : sanitize_text_field(wp_unslash($value));
-                        if (is_callable([$customer, "set_{$s_key}"])) {
-                            $customer->{"set_{$s_key}"}($s_value);
+                if ($customer) {
+                    // Campos de facturación
+                    $billing_fields = [
+                        'first_name', 'last_name', 'company', 'address_1', 'address_2',
+                        'city', 'state', 'postcode', 'country', 'email', 'phone'
+                    ];
+                    
+                    foreach ($billing_fields as $field) {
+                        $key = 'billing_' . $field;
+                        if (isset($checkout_fields[$key]) && !empty($checkout_fields[$key])) {
+                            $value = is_array($checkout_fields[$key]) 
+                                ? array_map('sanitize_text_field', $checkout_fields[$key]) 
+                                : sanitize_text_field($checkout_fields[$key]);
+                            
+                            $setter = 'set_billing_' . $field;
+                            if (is_callable([$customer, $setter])) {
+                                $customer->$setter($value);
+                            }
                         }
                     }
+                    
+                    // Campos de envío
+                    $shipping_fields = [
+                        'first_name', 'last_name', 'company', 'address_1', 'address_2',
+                        'city', 'state', 'postcode', 'country'
+                    ];
+                    
+                    foreach ($shipping_fields as $field) {
+                        $key = 'shipping_' . $field;
+                        if (isset($checkout_fields[$key]) && !empty($checkout_fields[$key])) {
+                            $value = is_array($checkout_fields[$key]) 
+                                ? array_map('sanitize_text_field', $checkout_fields[$key]) 
+                                : sanitize_text_field($checkout_fields[$key]);
+                            
+                            $setter = 'set_shipping_' . $field;
+                            if (is_callable([$customer, $setter])) {
+                                $customer->$setter($value);
+                            }
+                        }
+                    }
+                    
+                    // Guardar los cambios del customer
                     $customer->save();
                 }
             }
-            
-            $wpdb->update(self::$abandoned_cart_table_name, ['status' => 'recovered'], ['id' => $cart_row->id]);
-            wp_safe_redirect(wc_get_checkout_url());
-            exit();
         }
+        
+        // 3. Marcar el carrito como recuperado
+        $wpdb->update(
+            self::$abandoned_cart_table_name, 
+            ['status' => 'recovered'], 
+            ['id' => $cart_row->id]
+        );
+        
+        // 4. Redirigir al checkout
+        wp_safe_redirect(wc_get_checkout_url());
+        exit();
+    }
+
+    /**
+     * NUEVO: Rellena automáticamente los campos del checkout con los datos guardados.
+     * 
+     * @param mixed $value Valor actual del campo
+     * @param string $input Nombre del campo
+     * @return mixed Valor del campo (recuperado o actual)
+     */
+    public function populate_checkout_fields($value, $input) {
+        // Obtener los datos guardados de la sesión
+        $recovered_data = WC()->session->get('wse_pro_recovered_checkout_data');
+        
+        if (!$recovered_data || !is_array($recovered_data)) {
+            return $value;
+        }
+        
+        // Si existe un valor para este campo en los datos recuperados, usarlo
+        if (isset($recovered_data[$input]) && !empty($recovered_data[$input])) {
+            // Limpiar la sesión después de usarla una vez (opcional)
+            // Si quieres que los datos persistan durante toda la sesión, comenta la siguiente línea
+            // WC()->session->set('wse_pro_recovered_checkout_data', null);
+            
+            return is_array($recovered_data[$input]) 
+                ? array_map('sanitize_text_field', $recovered_data[$input])
+                : sanitize_text_field($recovered_data[$input]);
+        }
+        
+        return $value;
     }
 
     /**
@@ -313,6 +401,11 @@ final class WooWApp {
                 wp_unschedule_event($active_cart->scheduled_time, 'wse_pro_send_abandoned_cart_event', [$active_cart->id]);
             }
             $wpdb->update(self::$abandoned_cart_table_name, ['status' => 'recovered'], ['id' => $active_cart->id]);
+        }
+        
+        // Limpiar los datos recuperados de la sesión después de completar el pedido
+        if (WC()->session) {
+            WC()->session->set('wse_pro_recovered_checkout_data', null);
         }
     }
 
