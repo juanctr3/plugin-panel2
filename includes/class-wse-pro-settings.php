@@ -54,6 +54,8 @@ class WSE_Pro_Settings {
 
     public function sanitize_textarea_fields($sanitized_settings) {
         $all_settings = $this->get_settings(true);
+        
+        // Sanitizar textareas normales
         foreach ($all_settings as $setting) {
             if (isset($setting['id'], $setting['type']) && in_array($setting['type'], ['textarea', 'textarea_with_pickers'])) {
                 $option_id = $setting['id'];
@@ -62,6 +64,32 @@ class WSE_Pro_Settings {
                 }
             }
         }
+        
+        // NUEVO: Sanitizar campos de cupones personalizados
+        for ($i = 1; $i <= 3; $i++) {
+            // Checkbox de activar cupón
+            $enable_key = 'wse_pro_abandoned_cart_coupon_enable_' . $i;
+            $sanitized_settings[$enable_key] = isset($_POST[$enable_key]) ? 'yes' : 'no';
+            
+            // Tipo de cupón
+            $type_key = 'wse_pro_abandoned_cart_coupon_type_' . $i;
+            if (isset($_POST[$type_key])) {
+                $sanitized_settings[$type_key] = sanitize_text_field($_POST[$type_key]);
+            }
+            
+            // Cantidad de descuento
+            $amount_key = 'wse_pro_abandoned_cart_coupon_amount_' . $i;
+            if (isset($_POST[$amount_key])) {
+                $sanitized_settings[$amount_key] = floatval($_POST[$amount_key]);
+            }
+            
+            // Días de expiración
+            $expiry_key = 'wse_pro_abandoned_cart_coupon_expiry_' . $i;
+            if (isset($_POST[$expiry_key])) {
+                $sanitized_settings[$expiry_key] = intval($_POST[$expiry_key]);
+            }
+        }
+        
         return $sanitized_settings;
     }
 
@@ -195,6 +223,12 @@ class WSE_Pro_Settings {
             ['name' => '', 'type' => 'select', 'id' => 'wse_pro_abandoned_cart_unit_' . $message_number, 'options' => ['minutes' => __('Minutos', 'woowapp-smsenlinea-pro'), 'hours' => __('Horas', 'woowapp-smsenlinea-pro')], 'default' => $default_units[$message_number]],
             
             ['name' => __('Plantilla del mensaje', 'woowapp-smsenlinea-pro'), 'type' => 'textarea_with_pickers', 'id' => 'wse_pro_abandoned_cart_message_' . $message_number, 'css' => 'width:100%; height:90px;', 'default' => $default_messages[$message_number]],
+            
+            // NUEVO: Campos ocultos para que WooCommerce los guarde correctamente
+            ['type' => 'checkbox', 'id' => 'wse_pro_abandoned_cart_coupon_enable_' . $message_number, 'default' => 'no', 'autoload' => false],
+            ['type' => 'select', 'id' => 'wse_pro_abandoned_cart_coupon_type_' . $message_number, 'default' => 'percent', 'autoload' => false],
+            ['type' => 'number', 'id' => 'wse_pro_abandoned_cart_coupon_amount_' . $message_number, 'default' => $default_discounts[$message_number], 'autoload' => false],
+            ['type' => 'number', 'id' => 'wse_pro_abandoned_cart_coupon_expiry_' . $message_number, 'default' => $default_expiry[$message_number], 'autoload' => false],
             
             ['name' => __('💳 Configuración de Cupón', 'woowapp-smsenlinea-pro'), 'type' => 'coupon_config', 'id' => 'wse_pro_coupon_config_' . $message_number, 'message_number' => $message_number, 'default_discount' => $default_discounts[$message_number], 'default_expiry' => $default_expiry[$message_number]],
             
