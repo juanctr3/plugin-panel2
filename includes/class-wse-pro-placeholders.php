@@ -3,16 +3,13 @@
  * Maneja la lógica de reemplazo de placeholders para los mensajes y define las variables disponibles.
  *
  * @package WooWApp
- * @version 2.0.0
+ * @version 1.1
  */
 
 if (!defined('ABSPATH')) {
-    exit; // Exit if accessed directly.
+    exit;
 }
 
-/**
- * Clase WSE_Pro_Placeholders.
- */
 class WSE_Pro_Placeholders {
 
     /**
@@ -31,9 +28,10 @@ class WSE_Pro_Placeholders {
      * Reemplaza placeholders para mensajes de carritos abandonados.
      * @param string   $template La plantilla del mensaje.
      * @param stdClass $cart_row El objeto de la fila de la base de datos del carrito.
+     * @param array    $coupon_data Datos del cupón generado (opcional).
      * @return string            El mensaje con los valores reemplazados.
      */
-    public static function replace_for_cart($template, $cart_row) {
+    public static function replace_for_cart($template, $cart_row, $coupon_data = null) {
         $cart_contents = maybe_unserialize($cart_row->cart_contents);
         $items_list = '';
         $first_product_name = '';
@@ -77,6 +75,20 @@ class WSE_Pro_Placeholders {
             '{checkout_link}'      => $recovery_link,
             '{first_product_name}' => $first_product_name,
         ];
+
+        // NUEVO: Agregar variables de cupón si existe
+        if ($coupon_data && is_array($coupon_data) && isset($coupon_data['coupon_code'])) {
+            $values['{coupon_code}'] = $coupon_data['coupon_code'];
+            $values['{coupon_amount}'] = $coupon_data['formatted_discount'];
+            $values['{coupon_expires}'] = $coupon_data['formatted_expiry'];
+            $values['{discount_amount}'] = $coupon_data['formatted_discount']; // Alias
+        } else {
+            // Si no hay cupón, reemplazar con vacío
+            $values['{coupon_code}'] = '';
+            $values['{coupon_amount}'] = '';
+            $values['{coupon_expires}'] = '';
+            $values['{discount_amount}'] = '';
+        }
 
         $all_placeholders = self::get_all_placeholders_grouped();
         foreach($all_placeholders as $group) {
@@ -175,7 +187,6 @@ class WSE_Pro_Placeholders {
         $payment_link = $order->get_checkout_payment_url() ?: '';
         $first_product_link = $first_product ? $first_product->get_permalink() : '';
         
-        // Genera el enlace a la página de reseña personalizada.
         $review_page_slug = 'escribir-resena';
         $first_product_review_link = add_query_arg([
             'order_id' => $order->get_id(),
@@ -235,7 +246,8 @@ class WSE_Pro_Placeholders {
             __('Cliente', 'woowapp-smsenlinea-pro') => ['{customer_name}', '{customer_lastname}', '{customer_fullname}', '{billing_email}', '{billing_phone}', '{customer_note}'],
             __('Direcciones', 'woowapp-smsenlinea-pro') => ['{billing_address}', '{shipping_address}'],
             __('Producto (Primer Ítem)', 'woowapp-smsenlinea-pro') => ['{first_product_name}', '{first_product_link}', '{first_product_review_link}', '{product_image_url}'],
-            __('Carrito Abandonado', 'woowapp-smsenlinea-pro') => ['{cart_items}', '{cart_total}', '{checkout_link}', '{customer_name}']
+            __('Carrito Abandonado', 'woowapp-smsenlinea-pro') => ['{cart_items}', '{cart_total}', '{checkout_link}', '{customer_name}'],
+            __('Cupones de Descuento', 'woowapp-smsenlinea-pro') => ['{coupon_code}', '{coupon_amount}', '{coupon_expires}', '{discount_amount}']
         ];
     }
     
