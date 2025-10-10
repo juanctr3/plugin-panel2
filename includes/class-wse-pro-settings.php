@@ -113,8 +113,8 @@ class WSE_Pro_Settings {
         $log_url = admin_url('admin.php?page=wc-status&tab=logs');
         $log_handle = WSE_Pro_API_Handler::$log_handle;
 
-        $panel1_docs_url = 'https://documenter.getpostman.com/view/20356708/2s93zB5c3s#intro';
-        $panel2_login_url = 'https://app.smsenlinea.com/login';
+        $panel1_docs_url = 'https://whatsapp.smsenlinea.com';
+        $panel2_login_url = 'https://api.smsenlinea.com/user';
 
         return [
             ['name' => __('Ajustes de API y Generales', 'woowapp-smsenlinea-pro'), 'type' => 'title', 'id' => 'wse_pro_api_settings_title'],
@@ -385,3 +385,4 @@ class WSE_Pro_Settings {
         ]);
     }
 }
+
