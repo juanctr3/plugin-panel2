@@ -377,12 +377,13 @@ class WSE_Pro_Settings {
         if ('woocommerce_page_wc-settings' !== $hook) return;
         if (!isset($_GET['tab']) || 'woowapp' !== $_GET['tab']) return;
 
-        wp_enqueue_style('wse-pro-admin-css', WSE_PRO_URL . 'assets/css/admin.css', [], '1.8.1');
-        wp_enqueue_script('wse-pro-admin-js', WSE_PRO_URL . 'assets/js/admin.js', ['jquery'], '1.8.1', true);
+        wp_enqueue_style('wse-pro-admin-css', WSE_PRO_URL . 'assets/css/admin.css', [], '1.1');
+        wp_enqueue_script('wse-pro-admin-js', WSE_PRO_URL . 'assets/js/admin.js', ['jquery'], '1.1', true);
         wp_localize_script('wse-pro-admin-js', 'wse_pro_admin_params', [
             'ajax_url' => admin_url('admin-ajax.php'),
             'nonce'    => wp_create_nonce('wse_pro_send_test_nonce')
         ]);
     }
 }
+
 
