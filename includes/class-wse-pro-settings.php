@@ -209,8 +209,8 @@ class WSE_Pro_Settings {
      * Genera la configuración para un mensaje específico de carrito
      */
     private function get_cart_message_settings($message_number) {
-        $default_times = [1 => 60, 2 => 24, 3 => 72];
-        $default_units = [1 => 'minutes', 2 => 'hours', 3 => 'hours'];
+        $default_times = [1 => 60, 2 => 1, 3 => 3];
+        $default_units = [1 => 'minutes', 2 => 'days', 3 => 'days'];
         $default_discounts = [1 => 10, 2 => 15, 3 => 20];
         $default_expiry = [1 => 7, 2 => 5, 3 => 3];
 
@@ -286,6 +286,7 @@ class WSE_Pro_Settings {
                     <select name="wse_pro_abandoned_cart_unit_<?php echo $msg_num; ?>" style="width: 150px;">
                         <option value="minutes" <?php selected($unit_value, 'minutes'); ?>><?php _e('Minutos', 'woowapp-smsenlinea-pro'); ?></option>
                         <option value="hours" <?php selected($unit_value, 'hours'); ?>><?php _e('Horas', 'woowapp-smsenlinea-pro'); ?></option>
+                        <option value="days" <?php selected($unit_value, 'days'); ?>><?php _e('Días', 'woowapp-smsenlinea-pro'); ?></option>
                     </select>
                 </div>
                 <?php if (!empty($value['desc'])) : ?>
