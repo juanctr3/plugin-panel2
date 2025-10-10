@@ -19,6 +19,7 @@ class WSE_Pro_Settings {
         add_action('woocommerce_admin_field_button', [$this, 'render_button_field']);
         add_action('woocommerce_admin_field_coupon_config', [$this, 'render_coupon_config']);
         add_action('woocommerce_admin_field_message_header', [$this, 'render_message_header']);
+        add_action('woocommerce_admin_field_time_selector', [$this, 'render_time_selector']);
 
         add_filter('woocommerce_settings_api_sanitized_fields_woowapp', [$this, 'sanitize_textarea_fields']);
     }
@@ -65,8 +66,20 @@ class WSE_Pro_Settings {
             }
         }
         
-        // NUEVO: Sanitizar campos de cupones personalizados
+        // Sanitizar campos de tiempo y cupones personalizados
         for ($i = 1; $i <= 3; $i++) {
+            // Tiempo
+            $time_key = 'wse_pro_abandoned_cart_time_' . $i;
+            if (isset($_POST[$time_key])) {
+                $sanitized_settings[$time_key] = intval($_POST[$time_key]);
+            }
+            
+            // Unidad de tiempo
+            $unit_key = 'wse_pro_abandoned_cart_unit_' . $i;
+            if (isset($_POST[$unit_key])) {
+                $sanitized_settings[$unit_key] = sanitize_text_field($_POST[$unit_key]);
+            }
+            
             // Checkbox de activar cupón
             $enable_key = 'wse_pro_abandoned_cart_coupon_enable_' . $i;
             $sanitized_settings[$enable_key] = isset($_POST[$enable_key]) ? 'yes' : 'no';
@@ -218,17 +231,9 @@ class WSE_Pro_Settings {
             
             ['name' => __('Activar este mensaje', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_abandoned_cart_enable_msg_' . $message_number, 'desc' => sprintf(__('<strong>Enviar mensaje #%d</strong>', 'woowapp-smsenlinea-pro'), $message_number), 'default' => 'no'],
             
-            ['name' => __('Enviar después de', 'woowapp-smsenlinea-pro'), 'type' => 'number', 'id' => 'wse_pro_abandoned_cart_time_' . $message_number, 'custom_attributes' => ['min' => '1'], 'default' => $default_times[$message_number], 'css' => 'width:100px;'],
+            ['name' => __('⏱️ Enviar después de', 'woowapp-smsenlinea-pro'), 'type' => 'time_selector', 'id' => 'wse_pro_abandoned_cart_time_selector_' . $message_number, 'message_number' => $message_number, 'default_time' => $default_times[$message_number], 'default_unit' => $default_units[$message_number], 'desc' => __('Define cuánto tiempo esperar después de que el cliente abandone el carrito.', 'woowapp-smsenlinea-pro')],
             
-            ['name' => '', 'type' => 'select', 'id' => 'wse_pro_abandoned_cart_unit_' . $message_number, 'options' => ['minutes' => __('Minutos', 'woowapp-smsenlinea-pro'), 'hours' => __('Horas', 'woowapp-smsenlinea-pro')], 'default' => $default_units[$message_number]],
-            
-            ['name' => __('Plantilla del mensaje', 'woowapp-smsenlinea-pro'), 'type' => 'textarea_with_pickers', 'id' => 'wse_pro_abandoned_cart_message_' . $message_number, 'css' => 'width:100%; height:90px;', 'default' => $default_messages[$message_number]],
-            
-            // NUEVO: Campos ocultos para que WooCommerce los guarde correctamente
-            ['type' => 'checkbox', 'id' => 'wse_pro_abandoned_cart_coupon_enable_' . $message_number, 'default' => 'no', 'autoload' => false],
-            ['type' => 'select', 'id' => 'wse_pro_abandoned_cart_coupon_type_' . $message_number, 'default' => 'percent', 'autoload' => false],
-            ['type' => 'number', 'id' => 'wse_pro_abandoned_cart_coupon_amount_' . $message_number, 'default' => $default_discounts[$message_number], 'autoload' => false],
-            ['type' => 'number', 'id' => 'wse_pro_abandoned_cart_coupon_expiry_' . $message_number, 'default' => $default_expiry[$message_number], 'autoload' => false],
+            ['name' => __('📝 Plantilla del mensaje', 'woowapp-smsenlinea-pro'), 'type' => 'textarea_with_pickers', 'id' => 'wse_pro_abandoned_cart_message_' . $message_number, 'css' => 'width:100%; height:90px;', 'default' => $default_messages[$message_number]],
             
             ['name' => __('💳 Configuración de Cupón', 'woowapp-smsenlinea-pro'), 'type' => 'coupon_config', 'id' => 'wse_pro_coupon_config_' . $message_number, 'message_number' => $message_number, 'default_discount' => $default_discounts[$message_number], 'default_expiry' => $default_expiry[$message_number]],
             
@@ -252,6 +257,40 @@ class WSE_Pro_Settings {
                         <?php echo esc_html($value['name']); ?>
                     </h3>
                 </div>
+            </td>
+        </tr>
+        <?php
+    }
+
+    /**
+     * Renderiza el selector de tiempo (número + unidad)
+     */
+    public function render_time_selector($value) {
+        $msg_num = $value['message_number'];
+        $time_value = get_option('wse_pro_abandoned_cart_time_' . $msg_num, $value['default_time']);
+        $unit_value = get_option('wse_pro_abandoned_cart_unit_' . $msg_num, $value['default_unit']);
+        ?>
+        <tr valign="top">
+            <th scope="row" class="titledesc">
+                <label><?php echo esc_html($value['name']); ?></label>
+            </th>
+            <td class="forminp">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <input 
+                        type="number" 
+                        name="wse_pro_abandoned_cart_time_<?php echo $msg_num; ?>" 
+                        value="<?php echo esc_attr($time_value); ?>" 
+                        min="1" 
+                        style="width: 100px;"
+                    >
+                    <select name="wse_pro_abandoned_cart_unit_<?php echo $msg_num; ?>" style="width: 150px;">
+                        <option value="minutes" <?php selected($unit_value, 'minutes'); ?>><?php _e('Minutos', 'woowapp-smsenlinea-pro'); ?></option>
+                        <option value="hours" <?php selected($unit_value, 'hours'); ?>><?php _e('Horas', 'woowapp-smsenlinea-pro'); ?></option>
+                    </select>
+                </div>
+                <?php if (!empty($value['desc'])) : ?>
+                    <p class="description" style="margin-top: 8px;"><?php echo wp_kses_post($value['desc']); ?></p>
+                <?php endif; ?>
             </td>
         </tr>
         <?php
