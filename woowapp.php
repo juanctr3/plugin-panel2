@@ -14,7 +14,7 @@
  */
 
 if (!defined('ABSPATH')) {
-    exit; // Exit if accessed directly.
+    exit;
 }
 
 define('WSE_PRO_VERSION', '1.1');
@@ -51,14 +51,15 @@ final class WooWApp {
     }
 
     /**
-     * Se ejecuta al activar el plugin para crear la tabla, la página y refrescar los permalinks.
+     * Se ejecuta al activar el plugin
      */
     public static function on_activation() {
         global $wpdb;
         $table_name = $wpdb->prefix . 'wse_pro_abandoned_carts';
         $charset_collate = $wpdb->get_charset_collate();
 
-        $sql = "CREATE TABLE $table_name (
+        // Tabla de carritos abandonados con campos nuevos
+        $sql = "CREATE TABLE IF NOT EXISTS $table_name (
             id BIGINT(20) NOT NULL AUTO_INCREMENT,
             user_id BIGINT(20) UNSIGNED NOT NULL DEFAULT 0,
             session_id VARCHAR(191) NOT NULL,
@@ -68,22 +69,34 @@ final class WooWApp {
             cart_total DECIMAL(10, 2) NOT NULL,
             checkout_data LONGTEXT DEFAULT NULL,
             status VARCHAR(20) NOT NULL DEFAULT 'active',
+            messages_sent VARCHAR(20) DEFAULT '0,0,0',
             created_at DATETIME NOT NULL,
             updated_at DATETIME NOT NULL,
-            scheduled_time BIGINT(20) DEFAULT NULL,
+            scheduled_time_1 BIGINT(20) DEFAULT NULL,
+            scheduled_time_2 BIGINT(20) DEFAULT NULL,
+            scheduled_time_3 BIGINT(20) DEFAULT NULL,
             recovery_token VARCHAR(64) NOT NULL,
             PRIMARY KEY (id),
             UNIQUE KEY recovery_token (recovery_token),
-            KEY session_id (session_id)
+            KEY session_id (session_id),
+            KEY status (status)
         ) $charset_collate;";
 
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
         dbDelta($sql);
 
-        // Crear la página de reseñas si no existe
+        // Crear tabla de cupones
+        require_once WSE_PRO_PATH . 'includes/class-wse-pro-coupon-manager.php';
+        WSE_Pro_Coupon_Manager::create_coupons_table();
+
+        // Crear la página de reseñas
         self::create_review_page();
         
-        // Refrescar los permalinks
+        // Programar limpieza diaria de cupones expirados
+        if (!wp_next_scheduled('wse_pro_cleanup_coupons')) {
+            wp_schedule_event(time(), 'daily', 'wse_pro_cleanup_coupons');
+        }
+        
         flush_rewrite_rules();
     }
 
@@ -123,12 +136,11 @@ final class WooWApp {
         $this->includes();
         $this->init_classes();
         
-        // Añadir aviso en el admin si la página no existe
         add_action('admin_notices', [$this, 'check_review_page_exists']);
     }
 
     /**
-     * Verifica si la página de reseñas existe y muestra un aviso si no.
+     * Verifica si la página de reseñas existe
      */
     public function check_review_page_exists() {
         $page_id = get_option('wse_pro_review_page_id');
@@ -153,15 +165,16 @@ final class WooWApp {
         require_once WSE_PRO_PATH . 'includes/class-wse-pro-settings.php';
         require_once WSE_PRO_PATH . 'includes/class-wse-pro-api-handler.php';
         require_once WSE_PRO_PATH . 'includes/class-wse-pro-placeholders.php';
+        require_once WSE_PRO_PATH . 'includes/class-wse-pro-coupon-manager.php';
     }
 
     /**
-     * Inicializa las clases y registra todos los hooks de acciones.
+     * Inicializa las clases y registra todos los hooks.
      */
     public function init_classes() {
         new WSE_Pro_Settings();
         
-        // Manejar la recreación de la página de reseñas
+        // Manejar recreación de página de reseñas
         if (isset($_GET['action']) && $_GET['action'] === 'recreate_review_page' && 
             isset($_GET['page']) && $_GET['page'] === 'wc-settings' &&
             isset($_GET['tab']) && $_GET['tab'] === 'woowapp') {
@@ -183,19 +196,24 @@ final class WooWApp {
             add_action('wp_ajax_wse_pro_capture_cart', [$this, 'capture_cart_via_ajax']);
             add_action('wp_ajax_nopriv_wse_pro_capture_cart', [$this, 'capture_cart_via_ajax']);
             add_action('woocommerce_new_order', [$this, 'cancel_abandoned_cart_reminder'], 10, 1);
-            add_action('wse_pro_send_abandoned_cart_event', [$this, 'send_abandoned_cart_notification'], 10, 1);
-            add_action('template_redirect', [$this, 'handle_cart_recovery_link']);
             
-            // NUEVO: Hooks para prellenar los campos del checkout
+            // NUEVO: Múltiples eventos para los 3 mensajes
+            add_action('wse_pro_send_abandoned_cart_1', [$this, 'send_abandoned_cart_message_1'], 10, 1);
+            add_action('wse_pro_send_abandoned_cart_2', [$this, 'send_abandoned_cart_message_2'], 10, 1);
+            add_action('wse_pro_send_abandoned_cart_3', [$this, 'send_abandoned_cart_message_3'], 10, 1);
+            
+            add_action('template_redirect', [$this, 'handle_cart_recovery_link']);
             add_filter('woocommerce_checkout_get_value', [$this, 'populate_checkout_fields'], 10, 2);
         }
 
-        // Registrar el shortcode para el formulario de reseñas
+        // Limpieza de cupones
+        add_action('wse_pro_cleanup_coupons', [WSE_Pro_Coupon_Manager::class, 'cleanup_expired_coupons']);
+        
+        // Tracking de uso de cupones
+        add_action('woocommerce_checkout_order_processed', [WSE_Pro_Coupon_Manager::class, 'track_coupon_usage'], 10, 1);
+
         add_shortcode('woowapp_review_form', [$this, 'render_review_form_shortcode']);
-        
-        // También mantener el filtro de contenido como fallback
         add_filter('the_content', [$this, 'handle_custom_review_page_content']);
-        
         add_filter('woocommerce_order_actions', [$this, 'add_manual_review_request_action']);
         add_action('woocommerce_order_action_wse_send_review_request', [$this, 'process_manual_review_request_action']);
     }
@@ -214,39 +232,61 @@ final class WooWApp {
     }
 
     /**
-     * Captura el carrito y los datos del formulario vía AJAX.
+     * Captura el carrito y programa los 3 mensajes
      */
     public function capture_cart_via_ajax() {
         check_ajax_referer('wse_pro_capture_cart_nonce', 'security');
         global $wpdb;
+        
         $phone = isset($_POST['phone']) ? sanitize_text_field($_POST['phone']) : '';
         $first_name = isset($_POST['first_name']) ? sanitize_text_field($_POST['first_name']) : '';
         $checkout_data = isset($_POST['checkout_data']) ? wp_unslash($_POST['checkout_data']) : '';
         $cart = WC()->cart;
+        
         if (empty($phone) || !$cart || $cart->is_empty()) {
             wp_send_json_error(['message' => 'Phone or cart empty.']);
             return;
         }
+        
         $session_id = WC()->session->get_customer_id();
         $user_id = get_current_user_id();
         $cart_contents = maybe_serialize($cart->get_cart());
         $cart_total = $cart->get_total('edit');
         $current_time = current_time('mysql');
-        $existing_cart = $wpdb->get_row($wpdb->prepare("SELECT * FROM " . self::$abandoned_cart_table_name . " WHERE session_id = %s AND status = 'active'", $session_id));
-        $delay_time = (int) get_option('wse_pro_abandoned_cart_time', 60);
-        $delay_unit = get_option('wse_pro_abandoned_cart_unit', 'minutes');
-        $delay_in_seconds = $delay_unit === 'hours' ? $delay_time * HOUR_IN_SECONDS : $delay_time * MINUTE_IN_SECONDS;
-        $scheduled_time = time() + $delay_in_seconds;
+        
+        $existing_cart = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM " . self::$abandoned_cart_table_name . " WHERE session_id = %s AND status = 'active'", 
+            $session_id
+        ));
+
+        // Programar los 3 mensajes
+        $scheduled_times = $this->calculate_scheduled_times();
+        
         $cart_data = [
-            'user_id' => $user_id, 'session_id' => $session_id,
-            'first_name' => $first_name, 'phone' => $phone,
-            'cart_contents' => $cart_contents, 'cart_total' => $cart_total,
-            'checkout_data' => $checkout_data,
-            'updated_at' => $current_time, 'scheduled_time' => $scheduled_time,
+            'user_id'          => $user_id,
+            'session_id'       => $session_id,
+            'first_name'       => $first_name,
+            'phone'            => $phone,
+            'cart_contents'    => $cart_contents,
+            'cart_total'       => $cart_total,
+            'checkout_data'    => $checkout_data,
+            'updated_at'       => $current_time,
+            'messages_sent'    => '0,0,0',
+            'scheduled_time_1' => $scheduled_times[1],
+            'scheduled_time_2' => $scheduled_times[2],
+            'scheduled_time_3' => $scheduled_times[3],
         ];
-        if ($existing_cart && $existing_cart->scheduled_time) {
-            wp_unschedule_event($existing_cart->scheduled_time, 'wse_pro_send_abandoned_cart_event', [$existing_cart->id]);
+
+        // Cancelar eventos anteriores si existen
+        if ($existing_cart) {
+            for ($i = 1; $i <= 3; $i++) {
+                $time_field = 'scheduled_time_' . $i;
+                if ($existing_cart->$time_field) {
+                    wp_unschedule_event($existing_cart->$time_field, 'wse_pro_send_abandoned_cart_' . $i, [$existing_cart->id]);
+                }
+            }
         }
+
         if ($existing_cart) {
             $wpdb->update(self::$abandoned_cart_table_name, $cart_data, ['id' => $existing_cart->id]);
             $cart_id = $existing_cart->id;
@@ -256,25 +296,170 @@ final class WooWApp {
             $wpdb->insert(self::$abandoned_cart_table_name, $cart_data);
             $cart_id = $wpdb->insert_id;
         }
-        wp_schedule_single_event($scheduled_time, 'wse_pro_send_abandoned_cart_event', [$cart_id]);
+
+        // Programar los 3 mensajes
+        for ($i = 1; $i <= 3; $i++) {
+            if (get_option('wse_pro_abandoned_cart_enable_msg_' . $i, 'no') === 'yes' && $scheduled_times[$i]) {
+                wp_schedule_single_event($scheduled_times[$i], 'wse_pro_send_abandoned_cart_' . $i, [$cart_id]);
+            }
+        }
+
         wp_send_json_success(['message' => 'Cart captured.', 'cart_id' => $cart_id]);
     }
 
     /**
-     * MEJORADO: Procesa el enlace de recuperación, restaura el carrito y los datos, y redirige al checkout.
+     * Calcula los tiempos programados para los 3 mensajes
+     *
+     * @return array Array con los timestamps
+     */
+    private function calculate_scheduled_times() {
+        $times = [1 => null, 2 => null, 3 => null];
+        $now = time();
+
+        for ($i = 1; $i <= 3; $i++) {
+            if (get_option('wse_pro_abandoned_cart_enable_msg_' . $i, 'no') === 'yes') {
+                $delay = (int) get_option('wse_pro_abandoned_cart_time_' . $i, 60);
+                $unit = get_option('wse_pro_abandoned_cart_unit_' . $i, 'minutes');
+                
+                $seconds = $unit === 'hours' ? $delay * HOUR_IN_SECONDS : $delay * MINUTE_IN_SECONDS;
+                $times[$i] = $now + $seconds;
+            }
+        }
+
+        return $times;
+    }
+
+    /**
+     * Envía el mensaje 1 de recuperación
+     */
+    public function send_abandoned_cart_message_1($cart_id) {
+        $this->send_abandoned_cart_message($cart_id, 1);
+    }
+
+    /**
+     * Envía el mensaje 2 de recuperación
+     */
+    public function send_abandoned_cart_message_2($cart_id) {
+        $this->send_abandoned_cart_message($cart_id, 2);
+    }
+
+    /**
+     * Envía el mensaje 3 de recuperación
+     */
+    public function send_abandoned_cart_message_3($cart_id) {
+        $this->send_abandoned_cart_message($cart_id, 3);
+    }
+
+    /**
+     * Envía un mensaje específico de recuperación de carrito
+     *
+     * @param int $cart_id ID del carrito
+     * @param int $message_number Número de mensaje (1, 2 o 3)
+     */
+    private function send_abandoned_cart_message($cart_id, $message_number) {
+        global $wpdb;
+        
+        $cart_row = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM " . self::$abandoned_cart_table_name . " WHERE id = %d", 
+            $cart_id
+        ));
+
+        if (!$cart_row || $cart_row->status !== 'active') {
+            return;
+        }
+
+        // Verificar que este mensaje no se haya enviado ya
+        $messages_sent = explode(',', $cart_row->messages_sent);
+        if ($messages_sent[$message_number - 1] == '1') {
+            return; // Ya se envió este mensaje
+        }
+
+        $template = get_option('wse_pro_abandoned_cart_message_' . $message_number);
+        if (empty($template)) {
+            return;
+        }
+
+        // Generar cupón si está habilitado
+        $coupon_data = null;
+        if (get_option('wse_pro_abandoned_cart_coupon_enable_' . $message_number, 'no') === 'yes') {
+            $coupon_manager = new WSE_Pro_Coupon_Manager();
+            
+            // Extraer email del checkout_data si existe
+            $customer_email = '';
+            if (!empty($cart_row->checkout_data)) {
+                parse_str($cart_row->checkout_data, $checkout_fields);
+                $customer_email = $checkout_fields['billing_email'] ?? '';
+            }
+
+            $coupon_result = $coupon_manager->generate_coupon([
+                'discount_type'   => get_option('wse_pro_abandoned_cart_coupon_type_' . $message_number, 'percent'),
+                'discount_amount' => (float) get_option('wse_pro_abandoned_cart_coupon_amount_' . $message_number, 10),
+                'expiry_days'     => (int) get_option('wse_pro_abandoned_cart_coupon_expiry_' . $message_number, 7),
+                'customer_phone'  => $cart_row->phone,
+                'customer_email'  => $customer_email,
+                'cart_id'         => $cart_id,
+                'message_number'  => $message_number,
+                'coupon_type'     => 'cart_recovery'
+            ]);
+
+            if (!is_wp_error($coupon_result)) {
+                $coupon_data = $coupon_result;
+            }
+        }
+
+        $api_handler = new WSE_Pro_API_Handler();
+        $message = WSE_Pro_Placeholders::replace_for_cart($template, $cart_row, $coupon_data);
+        $api_handler->send_message($cart_row->phone, $message, $cart_row, 'customer');
+
+        // Marcar mensaje como enviado
+        $messages_sent[$message_number - 1] = '1';
+        $new_status = implode(',', $messages_sent);
+        
+        $wpdb->update(
+            self::$abandoned_cart_table_name,
+            ['messages_sent' => $new_status],
+            ['id' => $cart_id]
+        );
+
+        // Si es el último mensaje, cambiar status a 'sent'
+        if ($message_number == 3 || !$this->has_more_messages_pending($message_number)) {
+            $wpdb->update(
+                self::$abandoned_cart_table_name,
+                ['status' => 'sent'],
+                ['id' => $cart_id]
+            );
+        }
+    }
+
+    /**
+     * Verifica si hay más mensajes pendientes después del actual
+     */
+    private function has_more_messages_pending($current_message) {
+        for ($i = $current_message + 1; $i <= 3; $i++) {
+            if (get_option('wse_pro_abandoned_cart_enable_msg_' . $i, 'no') === 'yes') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Procesa el enlace de recuperación
      */
     public function handle_cart_recovery_link() {
         if (!isset($_GET['recover-cart-wse'])) return;
 
         global $wpdb;
         $token = sanitize_text_field($_GET['recover-cart-wse']);
-        $cart_row = $wpdb->get_row($wpdb->prepare("SELECT * FROM " . self::$abandoned_cart_table_name . " WHERE recovery_token = %s AND status IN ('active', 'sent')", $token));
+        $cart_row = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM " . self::$abandoned_cart_table_name . " WHERE recovery_token = %s AND status IN ('active', 'sent')", 
+            $token
+        ));
         
         if (!$cart_row) {
             return;
         }
 
-        // 1. Restaurar los productos del carrito
         WC()->cart->empty_cart();
         $cart_contents = maybe_unserialize($cart_row->cart_contents);
         if (is_array($cart_contents)) {
@@ -288,18 +473,14 @@ final class WooWApp {
             }
         }
 
-        // 2. MEJORADO: Restaurar los datos del checkout en la sesión
         if (!empty($cart_row->checkout_data)) {
             parse_str($cart_row->checkout_data, $checkout_fields);
             
             if (is_array($checkout_fields) && !empty($checkout_fields)) {
-                // Guardar los datos en la sesión de WooCommerce
                 WC()->session->set('wse_pro_recovered_checkout_data', $checkout_fields);
                 
-                // También intentar actualizar el objeto customer
                 $customer = WC()->customer;
                 if ($customer) {
-                    // Campos de facturación
                     $billing_fields = [
                         'first_name', 'last_name', 'company', 'address_1', 'address_2',
                         'city', 'state', 'postcode', 'country', 'email', 'phone'
@@ -319,7 +500,6 @@ final class WooWApp {
                         }
                     }
                     
-                    // Campos de envío
                     $shipping_fields = [
                         'first_name', 'last_name', 'company', 'address_1', 'address_2',
                         'city', 'state', 'postcode', 'country'
@@ -339,45 +519,32 @@ final class WooWApp {
                         }
                     }
                     
-                    // Guardar los cambios del customer
                     $customer->save();
                 }
             }
         }
         
-        // 3. Marcar el carrito como recuperado
         $wpdb->update(
             self::$abandoned_cart_table_name, 
             ['status' => 'recovered'], 
             ['id' => $cart_row->id]
         );
         
-        // 4. Redirigir al checkout
         wp_safe_redirect(wc_get_checkout_url());
         exit();
     }
 
     /**
-     * NUEVO: Rellena automáticamente los campos del checkout con los datos guardados.
-     * 
-     * @param mixed $value Valor actual del campo
-     * @param string $input Nombre del campo
-     * @return mixed Valor del campo (recuperado o actual)
+     * Rellena campos del checkout con datos guardados
      */
     public function populate_checkout_fields($value, $input) {
-        // Obtener los datos guardados de la sesión
         $recovered_data = WC()->session->get('wse_pro_recovered_checkout_data');
         
         if (!$recovered_data || !is_array($recovered_data)) {
             return $value;
         }
         
-        // Si existe un valor para este campo en los datos recuperados, usarlo
         if (isset($recovered_data[$input]) && !empty($recovered_data[$input])) {
-            // Limpiar la sesión después de usarla una vez (opcional)
-            // Si quieres que los datos persistan durante toda la sesión, comenta la siguiente línea
-            // WC()->session->set('wse_pro_recovered_checkout_data', null);
-            
             return is_array($recovered_data[$input]) 
                 ? array_map('sanitize_text_field', $recovered_data[$input])
                 : sanitize_text_field($recovered_data[$input]);
@@ -387,65 +554,51 @@ final class WooWApp {
     }
 
     /**
-     * Cancela el recordatorio cuando se completa una compra.
+     * Cancela recordatorios cuando se completa una compra
      */
     public function cancel_abandoned_cart_reminder($order_id) {
         $session_id = WC()->session->get_customer_id();
         if (empty($session_id)) return;
         
         global $wpdb;
-        $active_cart = $wpdb->get_row($wpdb->prepare("SELECT * FROM " . self::$abandoned_cart_table_name . " WHERE session_id = %s AND status = 'active'", $session_id));
+        $active_cart = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM " . self::$abandoned_cart_table_name . " WHERE session_id = %s AND status = 'active'", 
+            $session_id
+        ));
 
         if ($active_cart) {
-            if ($active_cart->scheduled_time) {
-                wp_unschedule_event($active_cart->scheduled_time, 'wse_pro_send_abandoned_cart_event', [$active_cart->id]);
+            // Cancelar los 3 eventos programados
+            for ($i = 1; $i <= 3; $i++) {
+                $time_field = 'scheduled_time_' . $i;
+                if ($active_cart->$time_field) {
+                    wp_unschedule_event($active_cart->$time_field, 'wse_pro_send_abandoned_cart_' . $i, [$active_cart->id]);
+                }
             }
-            $wpdb->update(self::$abandoned_cart_table_name, ['status' => 'recovered'], ['id' => $active_cart->id]);
+            
+            $wpdb->update(
+                self::$abandoned_cart_table_name, 
+                ['status' => 'recovered'], 
+                ['id' => $active_cart->id]
+            );
         }
         
-        // Limpiar los datos recuperados de la sesión después de completar el pedido
         if (WC()->session) {
             WC()->session->set('wse_pro_recovered_checkout_data', null);
         }
     }
 
-    /**
-     * Envía la notificación de carrito abandonado.
-     */
-    public function send_abandoned_cart_notification($cart_id) {
-        global $wpdb;
-        $cart_row = $wpdb->get_row($wpdb->prepare("SELECT * FROM " . self::$abandoned_cart_table_name . " WHERE id = %d", $cart_id));
-        if (!$cart_row || $cart_row->status !== 'active') return;
-
-        $template = get_option('wse_pro_abandoned_cart_message');
-        if (empty($template)) return;
-
-        $api_handler = new WSE_Pro_API_Handler();
-        $message = WSE_Pro_Placeholders::replace_for_cart($template, $cart_row);
-        $api_handler->send_message($cart_row->phone, $message, $cart_row, 'customer');
-
-        $wpdb->update(self::$abandoned_cart_table_name, ['status' => 'sent'], ['id' => $cart_id]);
-    }
-
-    /**
-     * Dispara la notificación de cambio de estado.
-     */
+    // [El resto de los métodos permanecen igual]
+    
     public function trigger_status_change_notification($order_id, $order) {
         $api_handler = new WSE_Pro_API_Handler();
         $api_handler->handle_status_change($order_id, $order);
     }
 
-    /**
-     * Dispara la notificación de nueva nota.
-     */
     public function trigger_new_note_notification($data) {
         $api_handler = new WSE_Pro_API_Handler();
         $api_handler->handle_new_note($data);
     }
 
-    /**
-     * Programa el envío del recordatorio de reseña.
-     */
     public function schedule_review_reminder($order_id) {
         wp_clear_scheduled_hook('wse_pro_send_review_reminder_event', [$order_id]);
         if ('yes' !== get_option('wse_pro_enable_review_reminder', 'no')) return;
@@ -457,9 +610,6 @@ final class WooWApp {
         wp_schedule_single_event($time_to_send, 'wse_pro_send_review_reminder_event', [$order_id]);
     }
 
-    /**
-     * Envía la notificación de recordatorio de reseña.
-     */
     public function send_review_reminder_notification($order_id) {
         $order = wc_get_order($order_id);
         if (!$order || ($order->get_status() !== 'completed' && $order_id > 0)) return;
@@ -472,18 +622,11 @@ final class WooWApp {
         $api_handler->send_message($order->get_billing_phone(), $message, $order, 'customer');
     }
 
-    /**
-     * Renderiza el formulario de reseñas mediante shortcode.
-     */
     public function render_review_form_shortcode($atts) {
         return $this->get_review_form_html();
     }
 
-    /**
-     * Obtiene el HTML del formulario de reseñas.
-     */
     private function get_review_form_html() {
-        // Procesar el envío del formulario
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['wse_review_nonce'])) {
             if (!wp_verify_nonce($_POST['wse_review_nonce'], 'wse_submit_review')) {
                 return '<div class="woocommerce-error">' . __('Error de seguridad. Inténtalo de nuevo.', 'woowapp-smsenlinea-pro') . '</div>';
@@ -519,7 +662,6 @@ final class WooWApp {
             }
         }
 
-        // Obtener parámetros de la URL usando $_GET directamente
         $order_id = isset($_GET['order_id']) ? absint($_GET['order_id']) : 0;
         $order_key = isset($_GET['key']) ? sanitize_text_field($_GET['key']) : '';
         
@@ -553,9 +695,6 @@ final class WooWApp {
         return '<div class="woocommerce-error">' . __('Enlace de reseña no válido o caducado.', 'woowapp-smsenlinea-pro') . '</div>';
     }
 
-    /**
-     * Muestra y procesa el formulario de reseñas en la página personalizada (fallback).
-     */
     public function handle_custom_review_page_content($content) {
         $page_id = get_option('wse_pro_review_page_id');
         
@@ -563,26 +702,18 @@ final class WooWApp {
             return $content;
         }
 
-        // Si ya hay shortcode en el contenido, no hacer nada
         if (has_shortcode($content, 'woowapp_review_form')) {
             return $content;
         }
 
-        // Añadir el formulario automáticamente
         return $content . $this->get_review_form_html();
     }
 
-    /**
-     * Añade la opción "Enviar solicitud de reseña" al menú de acciones del pedido.
-     */
     public function add_manual_review_request_action($actions) {
         $actions['wse_send_review_request'] = __('Enviar solicitud de reseña por WhatsApp/SMS', 'woowapp-smsenlinea-pro');
         return $actions;
     }
 
-    /**
-     * Procesa la acción manual de envío de solicitud de reseña.
-     */
     public function process_manual_review_request_action($order) {
         $template = get_option('wse_pro_review_reminder_message');
         if (!empty($template)) {
@@ -600,16 +731,9 @@ final class WooWApp {
         }
     }
 
-    /**
-     * Muestra un aviso si WooCommerce no está activo.
-     */
     public function missing_wc_notice() {
         echo '<div class="error"><p><strong>' . esc_html__('WooWApp', 'woowapp-smsenlinea-pro') . ':</strong> ' . esc_html__('Este plugin requiere que WooCommerce esté instalado y activo para funcionar.', 'woowapp-smsenlinea-pro') . '</p></div>';
     }
 }
 
-/**
- * Inicia el plugin.
- */
 WooWApp::get_instance();
-
