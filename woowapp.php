@@ -297,10 +297,36 @@ final class WooWApp {
             $cart_id = $wpdb->insert_id;
         }
 
+        // Verificar que el cart_id sea válido
+        if (empty($cart_id) || $cart_id <= 0) {
+            if (class_exists('WC_Logger')) {
+                $logger = wc_get_logger();
+                $logger->error("Error: Cart ID inválido ({$cart_id}). No se programarán eventos.", ['source' => 'wse-pro-cart']);
+            }
+            wp_send_json_error(['message' => 'Error al guardar carrito.']);
+            return;
+        }
+
+        // Log de debug
+        if (class_exists('WC_Logger')) {
+            $logger = wc_get_logger();
+            $logger->info("Carrito guardado con ID #{$cart_id} para teléfono {$phone}", ['source' => 'wse-pro-cart']);
+        }
+
         // Programar los 3 mensajes
         for ($i = 1; $i <= 3; $i++) {
             if (get_option('wse_pro_abandoned_cart_enable_msg_' . $i, 'no') === 'yes' && $scheduled_times[$i]) {
-                wp_schedule_single_event($scheduled_times[$i], 'wse_pro_send_abandoned_cart_' . $i, [$cart_id]);
+                $success = wp_schedule_single_event($scheduled_times[$i], 'wse_pro_send_abandoned_cart_' . $i, [$cart_id]);
+                
+                // Log de debug
+                if (class_exists('WC_Logger')) {
+                    $logger = wc_get_logger();
+                    if ($success) {
+                        $logger->info("Evento programado: Mensaje #{$i} para carrito #{$cart_id} a las " . date('Y-m-d H:i:s', $scheduled_times[$i]), ['source' => 'wse-pro-cart']);
+                    } else {
+                        $logger->error("Error programando evento: Mensaje #{$i} para carrito #{$cart_id}", ['source' => 'wse-pro-cart']);
+                    }
+                }
             }
         }
 
