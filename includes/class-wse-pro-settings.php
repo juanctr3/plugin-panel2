@@ -19,7 +19,6 @@ class WSE_Pro_Settings {
         add_action('woocommerce_admin_field_button', [$this, 'render_button_field']);
         add_action('woocommerce_admin_field_coupon_config', [$this, 'render_coupon_config']);
         add_action('woocommerce_admin_field_message_header', [$this, 'render_message_header']);
-        add_action('woocommerce_admin_field_time_selector', [$this, 'render_time_selector']);
 
         add_filter('woocommerce_settings_api_sanitized_fields_woowapp', [$this, 'sanitize_textarea_fields']);
     }
@@ -50,96 +49,69 @@ class WSE_Pro_Settings {
 
     public function update_settings() {
         $current_section = isset($_GET['section']) ? sanitize_key($_GET['section']) : 'administration';
-        woocommerce_update_options($this->get_settings($current_section));
+        $settings = $this->get_settings($current_section);
+        
+        // CORRECCIÓN: Forzar actualización de checkboxes de cupones
+        $this->force_update_coupon_checkboxes($current_section);
+        
+        woocommerce_update_options($settings);
     }
 
-    public function sanitize_textarea_fields($sanitized_settings) {
-        $all_settings = $this->get_settings(true);
+    /**
+     * Fuerza la actualización correcta de todos los checkboxes de cupones
+     */
+    private function force_update_coupon_checkboxes($section) {
+        $checkbox_fields = [];
         
-        // Sanitizar textareas normales
-        foreach ($all_settings as $setting) {
-            if (isset($setting['id'], $setting['type']) && in_array($setting['type'], ['textarea', 'textarea_with_pickers'])) {
-                $option_id = $setting['id'];
-                if (isset($_POST[$option_id])) {
-                    $sanitized_settings[$option_id] = sanitize_textarea_field(wp_unslash($_POST[$option_id]));
-                }
+        if ($section === 'notifications') {
+            // Checkboxes de carrito abandonado (3 mensajes)
+            for ($i = 1; $i <= 3; $i++) {
+                $checkbox_fields[] = "wse_pro_cart_msg{$i}_coupon_enable";
             }
+            
+            // Checkboxes de reseñas
+            $checkbox_fields[] = 'wse_pro_review_coupon_enable';
         }
         
-        // Sanitizar campos de tiempo y cupones personalizados
-        for ($i = 1; $i <= 3; $i++) {
-            // Tiempo
-            $time_key = 'wse_pro_abandoned_cart_time_' . $i;
-            if (isset($_POST[$time_key])) {
-                $sanitized_settings[$time_key] = intval($_POST[$time_key]);
-            }
-            
-            // Unidad de tiempo
-            $unit_key = 'wse_pro_abandoned_cart_unit_' . $i;
-            if (isset($_POST[$unit_key])) {
-                $sanitized_settings[$unit_key] = sanitize_text_field($_POST[$unit_key]);
-            }
-            
-            // Checkbox de activar cupón
-            $enable_key = 'wse_pro_abandoned_cart_coupon_enable_' . $i;
-            $sanitized_settings[$enable_key] = isset($_POST[$enable_key]) ? 'yes' : 'no';
-            
-            // Tipo de cupón
-            $type_key = 'wse_pro_abandoned_cart_coupon_type_' . $i;
-            if (isset($_POST[$type_key])) {
-                $sanitized_settings[$type_key] = sanitize_text_field($_POST[$type_key]);
-            }
-            
-            // Cantidad de descuento
-            $amount_key = 'wse_pro_abandoned_cart_coupon_amount_' . $i;
-            if (isset($_POST[$amount_key])) {
-                $sanitized_settings[$amount_key] = floatval($_POST[$amount_key]);
-            }
-            
-            // Días de expiración
-            $expiry_key = 'wse_pro_abandoned_cart_coupon_expiry_' . $i;
-            if (isset($_POST[$expiry_key])) {
-                $sanitized_settings[$expiry_key] = intval($_POST[$expiry_key]);
+        // Actualizar cada checkbox
+        foreach ($checkbox_fields as $field) {
+            if (isset($_POST[$field])) {
+                update_option($field, 'yes');
+            } else {
+                update_option($field, 'no');
             }
         }
-        
-        return $sanitized_settings;
     }
 
-    public function get_settings($section = '') {
-        if ($section === true) {
-            return array_merge(
-                $this->get_administration_settings(),
-                $this->get_admin_messages_settings(),
-                $this->get_customer_messages_settings(),
-                $this->get_notifications_settings()
-            );
-        }
+    public function get_settings($section = 'administration') {
         switch ($section) {
-            case 'admin_messages': return $this->get_admin_messages_settings();
-            case 'customer_messages': return $this->get_customer_messages_settings();
-            case 'notifications': return $this->get_notifications_settings();
-            default: return $this->get_administration_settings();
+            case 'admin_messages':
+                return $this->get_admin_messages_settings();
+            case 'customer_messages':
+                return $this->get_customer_messages_settings();
+            case 'notifications':
+                return $this->get_notifications_settings();
+            default:
+                return $this->get_administration_settings();
         }
     }
 
     private function get_administration_settings() {
-        $log_url = admin_url('admin.php?page=wc-status&tab=logs');
-        $log_handle = WSE_Pro_API_Handler::$log_handle;
-        $panel1_docs_url = 'https://documenter.getpostman.com/view/20356708/2s93zB5c3s#intro';
-        $panel2_login_url = 'https://app.smsenlinea.com/login';
+        $log_handle = 'woowapp-' . date('Y-m-d');
+        $log_url = admin_url('admin.php?page=wc-status&tab=logs&log_file=' . $log_handle);
 
         return [
-            ['name' => __('Ajustes de API y Generales', 'woowapp-smsenlinea-pro'), 'type' => 'title', 'id' => 'wse_pro_api_settings_title'],
+            ['name' => __('Configuración General de WooWApp', 'woowapp-smsenlinea-pro'), 'type' => 'title', 'id' => 'wse_pro_general_settings_title'],
+            ['name' => __('Habilitar WooWApp', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_enable', 'default' => 'yes', 'desc' => __('Activa o desactiva todas las funciones.', 'woowapp-smsenlinea-pro')],
+            ['type' => 'sectionend', 'id' => 'wse_pro_general_settings_end'],
             
-            ['name' => __('Seleccionar API', 'woowapp-smsenlinea-pro'), 'type' => 'select', 'id' => 'wse_pro_api_panel_selection', 'options' => ['panel2' => __('API Panel 2 (WhatsApp QR)', 'woowapp-smsenlinea-pro'), 'panel1' => __('API Panel 1 (SMS y WhatsApp Clásico)', 'woowapp-smsenlinea-pro')], 'desc' => __('Elige el panel de SMSenlinea que deseas utilizar.', 'woowapp-smsenlinea-pro'), 'desc_tip' => true, 'default' => 'panel2'],
-            ['name' => __('Token de Autenticación (Panel 2)', 'woowapp-smsenlinea-pro'), 'type' => 'text', 'id' => 'wse_pro_api_token', 'css' => 'min-width:300px;', 'desc' => sprintf(__('Ingresa el token de tu instancia. Inicia sesión en <a href="%s" target="_blank">Panel 2</a>.', 'woowapp-smsenlinea-pro'), esc_url($panel2_login_url)), 'custom_attributes' => ['data-panel' => 'panel2']],
-            ['name' => __('Número de Remitente (Panel 2)', 'woowapp-smsenlinea-pro'), 'type' => 'text', 'id' => 'wse_pro_from_number', 'desc' => __('Incluye el código de país. Ej: 5211234567890.', 'woowapp-smsenlinea-pro'), 'desc_tip' => true, 'custom_attributes' => ['data-panel' => 'panel2']],
-            ['name' => __('API Secret (Panel 1)', 'woowapp-smsenlinea-pro'), 'type' => 'text', 'id' => 'wse_pro_api_secret_panel1', 'css' => 'min-width:300px;', 'desc' => sprintf(__('Copia tu API Secret desde <a href="%s" target="_blank">Panel 1</a>.', 'woowapp-smsenlinea-pro'), esc_url($panel1_docs_url)), 'custom_attributes' => ['data-panel' => 'panel1']],
-            ['name' => __('Tipo de Mensaje (Panel 1)', 'woowapp-smsenlinea-pro'), 'type' => 'select', 'id' => 'wse_pro_message_type_panel1', 'options' => ['whatsapp' => __('WhatsApp', 'woowapp-smsenlinea-pro'), 'sms' => __('SMS', 'woowapp-smsenlinea-pro')], 'desc' => __('Selecciona el tipo de mensaje.', 'woowapp-smsenlinea-pro'), 'desc_tip' => true, 'default' => 'whatsapp', 'custom_attributes' => ['data-panel' => 'panel1']],
-            ['name' => __('WhatsApp Account ID (Panel 1)', 'woowapp-smsenlinea-pro'), 'type' => 'text', 'id' => 'wse_pro_whatsapp_account_panel1', 'css' => 'min-width:300px;', 'desc' => __('ID único de tu cuenta de WhatsApp.', 'woowapp-smsenlinea-pro'), 'desc_tip' => true, 'custom_attributes' => ['data-panel' => 'panel1', 'data-msg-type' => 'whatsapp']],
-            ['name' => __('Modo de Envío SMS (Panel 1)', 'woowapp-smsenlinea-pro'), 'type' => 'select', 'id' => 'wse_pro_sms_mode_panel1', 'options' => ['devices' => __('Usar mis dispositivos', 'woowapp-smsenlinea-pro'), 'credits' => __('Usar créditos', 'woowapp-smsenlinea-pro')], 'desc' => __('devices=Android; credits=gateway.', 'woowapp-smsenlinea-pro'), 'desc_tip' => true, 'default' => 'devices', 'custom_attributes' => ['data-panel' => 'panel1', 'data-msg-type' => 'sms']],
-            ['name' => __('Device / Gateway ID (Panel 1)', 'woowapp-smsenlinea-pro'), 'type' => 'text', 'id' => 'wse_pro_sms_device_panel1', 'css' => 'min-width:300px;', 'desc' => __('ID de tu dispositivo o gateway.', 'woowapp-smsenlinea-pro'), 'desc_tip' => true, 'custom_attributes' => ['data-panel' => 'panel1', 'data-msg-type' => 'sms']],
+            ['name' => __('Configuración del Panel SMSenlinea', 'woowapp-smsenlinea-pro'), 'type' => 'title', 'id' => 'wse_pro_api_settings_title'],
+            ['name' => __('Panel a Utilizar', 'woowapp-smsenlinea-pro'), 'type' => 'select', 'id' => 'wse_pro_api_panel', 'default' => 'panel1', 'options' => ['panel1' => __('Panel 1 (SMS y WhatsApp)', 'woowapp-smsenlinea-pro'), 'panel2' => __('Panel 2 (WhatsApp)', 'woowapp-smsenlinea-pro')]],
+            ['name' => __('URL del Panel', 'woowapp-smsenlinea-pro'), 'type' => 'text', 'id' => 'wse_pro_api_url', 'css' => 'min-width:400px;', 'default' => 'https://ws.smsenlinea.com/api/v1/', 'custom_attributes' => ['data-panel' => 'panel1']],
+            ['name' => __('Token de Autenticación', 'woowapp-smsenlinea-pro'), 'type' => 'text', 'id' => 'wse_pro_api_token', 'css' => 'min-width:400px;', 'custom_attributes' => ['data-panel' => 'panel1']],
+            ['name' => __('URL del Panel 2', 'woowapp-smsenlinea-pro'), 'type' => 'text', 'id' => 'wse_pro_api_url_panel2', 'css' => 'min-width:400px;', 'default' => 'https://wsapi.smsenlinea.com/api/v1/', 'custom_attributes' => ['data-panel' => 'panel2']],
+            ['name' => __('Token Panel 2', 'woowapp-smsenlinea-pro'), 'type' => 'text', 'id' => 'wse_pro_api_token_panel2', 'css' => 'min-width:400px;', 'custom_attributes' => ['data-panel' => 'panel2']],
+            ['name' => __('Método de Envío Predeterminado', 'woowapp-smsenlinea-pro'), 'type' => 'select', 'id' => 'wse_pro_default_send_method', 'default' => 'whatsapp', 'options' => ['sms' => 'SMS', 'whatsapp' => 'WhatsApp'], 'desc' => __('Elige SMS o WhatsApp (Panel 1 soporta ambos; Panel 2 solo WhatsApp).', 'woowapp-smsenlinea-pro'), 'desc_tip' => true, 'custom_attributes' => ['data-panel' => 'panel1', 'data-msg-type' => 'sms']],
             ['name' => __('Código de País Predeterminado', 'woowapp-smsenlinea-pro'), 'type' => 'text', 'id' => 'wse_pro_default_country_code', 'desc' => __('Ej: 57 para Colombia.', 'woowapp-smsenlinea-pro'), 'desc_tip' => true],
             ['name' => __('Adjuntar Imagen de Producto (Pedidos)', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_attach_product_image', 'desc' => __('<strong>Activa para adjuntar imagen.</strong> (Solo WhatsApp)', 'woowapp-smsenlinea-pro'), 'default' => 'no'],
             ['name' => __('Activar Registro de Actividad (Log)', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_enable_log', 'default' => 'yes', 'desc' => sprintf(__('Ver en <a href="%s">WooCommerce > Registros</a> (<code>%s</code>).', 'woowapp-smsenlinea-pro'), esc_url($log_url), esc_html($log_handle))],
@@ -158,284 +130,250 @@ class WSE_Pro_Settings {
             ['name' => __('Números de Administradores', 'woowapp-smsenlinea-pro'), 'type' => 'textarea', 'id' => 'wse_pro_admin_numbers', 'css' => 'width:100%; height:100px;', 'desc' => __('Uno por línea con código de país (Ej: 573001234567).', 'woowapp-smsenlinea-pro')],
             ['name' => __('Plantillas de Mensajes para Administradores', 'woowapp-smsenlinea-pro'), 'type' => 'title', 'id' => 'wse_pro_admin_templates_title_sub'],
         ];
+
         foreach (wc_get_order_statuses() as $slug => $name) {
             $slug_clean = str_replace('wc-', '', $slug);
             $settings[] = ['name' => sprintf(__('Activar para: %s', 'woowapp-smsenlinea-pro'), esc_html($name)), 'type' => 'checkbox', 'id' => 'wse_pro_enable_admin_' . $slug_clean, 'default' => 'no'];
-            $settings[] = ['name' => __('Plantilla para Administradores', 'woowapp-smsenlinea-pro'), 'type' => 'textarea_with_pickers', 'id' => 'wse_pro_admin_message_' . $slug_clean, 'css' => 'width:100%; height:75px;', 'default' => sprintf(__('🔔 Pedido #{order_id} de {customer_fullname} cambió a: %s.', 'woowapp-smsenlinea-pro'), esc_html($name))];
+            $settings[] = ['name' => __('Plantilla para Administradores', 'woowapp-smsenlinea-pro'), 'type' => 'textarea_with_pickers', 'id' => 'wse_pro_admin_message_' . $slug_clean, 'css' => 'width:100%; min-height:100px;', 'default' => "Nuevo pedido #{order_id}\nCliente: {customer_name}\nTotal: {order_total}\nVer: {order_link}"];
         }
-        $settings[] = ['type' => 'sectionend', 'id' => 'wse_pro_admin_settings_end'];
+
+        $settings[] = ['type' => 'sectionend', 'id' => 'wse_pro_admin_templates_end'];
         return $settings;
     }
 
     private function get_customer_messages_settings() {
-        $settings = [['name' => __('Plantillas de Mensajes para Clientes', 'woowapp-smsenlinea-pro'), 'type' => 'title', 'id' => 'wse_pro_notifications_title']];
-        $templates = ['note' => ['name' => __('Nueva Nota de Pedido', 'woowapp-smsenlinea-pro'), 'default' => __('Hola {customer_name}, nueva nota en #{order_id}: {note_content}', 'woowapp-smsenlinea-pro')]];
+        $settings = [
+            ['name' => __('Notificaciones para Clientes', 'woowapp-smsenlinea-pro'), 'type' => 'title', 'id' => 'wse_pro_customer_settings_title', 'desc' => __('Define mensajes enviados a clientes.', 'woowapp-smsenlinea-pro')],
+        ];
+
         foreach (wc_get_order_statuses() as $slug => $name) {
             $slug_clean = str_replace('wc-', '', $slug);
-            $templates[$slug_clean] = ['name' => $name, 'default' => sprintf(__('Hola {customer_name}, tu pedido #{order_id} cambió a: %s. ¡Gracias!', 'woowapp-smsenlinea-pro'), strtolower($name))];
+            $settings[] = ['name' => sprintf(__('Activar para: %s', 'woowapp-smsenlinea-pro'), esc_html($name)), 'type' => 'checkbox', 'id' => 'wse_pro_enable_customer_' . $slug_clean, 'default' => 'yes'];
+            $settings[] = ['name' => __('Plantilla para Clientes', 'woowapp-smsenlinea-pro'), 'type' => 'textarea_with_pickers', 'id' => 'wse_pro_customer_message_' . $slug_clean, 'css' => 'width:100%; min-height:100px;', 'default' => "Hola {customer_name}, tu pedido #{order_id} está {order_status}.\nTotal: {order_total}\nVer: {order_link}"];
         }
-        foreach($templates as $key => $template) {
-            $settings[] = ['name' => sprintf(__('Activar para: %s', 'woowapp-smsenlinea-pro'), esc_html($template['name'])), 'type' => 'checkbox', 'id' => 'wse_pro_enable_' . $key, 'default' => 'no'];
-            $settings[] = ['name' => __('Plantilla de Mensaje', 'woowapp-smsenlinea-pro'), 'type' => 'textarea_with_pickers', 'id' => 'wse_pro_message_' . $key, 'css' => 'width:100%; height:75px;', 'default' => $template['default']];
-        }
-        $settings[] = ['type' => 'sectionend', 'id' => 'wse_pro_notifications_end'];
+
+        $settings[] = ['type' => 'sectionend', 'id' => 'wse_pro_customer_templates_end'];
         return $settings;
     }
 
     private function get_notifications_settings() {
-        $settings = [
-            ['name' => __('Recordatorio de Reseña de Producto', 'woowapp-smsenlinea-pro'), 'type' => 'title', 'id' => 'wse_pro_review_reminders_title', 'desc' => __('Envía un mensaje para incentivar reseñas.', 'woowapp-smsenlinea-pro')],
-            ['name' => __('Activar recordatorio de reseña', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_enable_review_reminder', 'desc' => __('<strong>Activar solicitudes automáticas.</strong>', 'woowapp-smsenlinea-pro'), 'default' => 'no'],
-            ['name' => __('Enviar después de', 'woowapp-smsenlinea-pro'), 'type' => 'number', 'id' => 'wse_pro_review_reminder_days', 'desc_tip' => true, 'desc' => __('días desde "Completado".', 'woowapp-smsenlinea-pro'), 'custom_attributes' => ['min' => '1'], 'default' => '7'],
-            ['name' => __('Plantilla del mensaje', 'woowapp-smsenlinea-pro'), 'type' => 'textarea_with_pickers', 'id' => 'wse_pro_review_reminder_message', 'css' => 'width:100%; height:75px;', 'default' => __('¡Hola {customer_name}! ¿Te importaría dejar una reseña de {first_product_name}? {first_product_review_link}', 'woowapp-smsenlinea-pro')],
-            ['type' => 'sectionend', 'id' => 'wse_pro_review_reminders_end'],
-            
-            // NUEVA SECCIÓN: Recuperación de Carrito con 3 Mensajes
-            ['name' => __('🛒 Recuperación de Carrito Abandonado', 'woowapp-smsenlinea-pro'), 'type' => 'title', 'id' => 'wse_pro_abandoned_cart_title', 'desc' => __('Configura hasta 3 mensajes progresivos con descuentos crecientes para recuperar ventas.', 'woowapp-smsenlinea-pro')],
-            ['name' => __('Activar recuperación de carrito', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_enable_abandoned_cart', 'desc' => __('<strong>Activar sistema de recuperación.</strong>', 'woowapp-smsenlinea-pro'), 'default' => 'no'],
-            ['name' => __('Adjuntar imagen del primer producto', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_abandoned_cart_attach_image', 'desc' => __('Incluir imagen en mensajes.', 'woowapp-smsenlinea-pro'), 'default' => 'no'],
-            ['type' => 'sectionend', 'id' => 'wse_pro_abandoned_cart_general_end'],
-        ];
-
-        // Configuración de los 3 mensajes
-        for ($i = 1; $i <= 3; $i++) {
-            $settings = array_merge($settings, $this->get_cart_message_settings($i));
-        }
-
-        return $settings;
-    }
-
-    /**
-     * Genera la configuración para un mensaje específico de carrito
-     */
-    private function get_cart_message_settings($message_number) {
-        $default_times = [1 => 60, 2 => 1, 3 => 3];
-        $default_units = [1 => 'minutes', 2 => 'days', 3 => 'days'];
-        $default_discounts = [1 => 10, 2 => 15, 3 => 20];
-        $default_expiry = [1 => 7, 2 => 5, 3 => 3];
-
-        $message_names = [
-            1 => __('Primer Mensaje de Recuperación', 'woowapp-smsenlinea-pro'),
-            2 => __('Segundo Mensaje de Recuperación', 'woowapp-smsenlinea-pro'),
-            3 => __('Tercer Mensaje (Última Oportunidad)', 'woowapp-smsenlinea-pro')
-        ];
-
-        $default_messages = [
-            1 => __('¡Hola {customer_name}! 👋 Notamos que dejaste productos en tu carrito. ¡Completa tu compra ahora! {checkout_link}', 'woowapp-smsenlinea-pro'),
-            2 => __('¡Hola {customer_name}! 🎁 Tus productos te esperan. Usa el código {coupon_code} para {coupon_amount} de descuento. ¡Válido hasta {coupon_expires}! {checkout_link}', 'woowapp-smsenlinea-pro'),
-            3 => __('⏰ {customer_name}, ¡ÚLTIMA OPORTUNIDAD! {coupon_amount} de descuento con {coupon_code}. Expira: {coupon_expires}. ¡No lo pierdas! {checkout_link}', 'woowapp-smsenlinea-pro')
-        ];
-
         return [
-            ['name' => $message_names[$message_number], 'type' => 'message_header', 'id' => 'wse_pro_cart_msg_' . $message_number . '_header', 'message_number' => $message_number],
+            // CARRITO ABANDONADO - Mensaje 1
+            ['type' => 'message_header', 'id' => 'cart_msg1_header', 'title' => __('📱 Mensaje 1 - Carrito Abandonado', 'woowapp-smsenlinea-pro')],
+            ['name' => __('Activar Mensaje 1', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_cart_msg1_enable', 'default' => 'yes'],
+            ['name' => __('Enviar después de (minutos)', 'woowapp-smsenlinea-pro'), 'type' => 'number', 'id' => 'wse_pro_cart_msg1_delay', 'default' => '30', 'custom_attributes' => ['min' => '1']],
+            ['name' => __('Plantilla del Mensaje', 'woowapp-smsenlinea-pro'), 'type' => 'textarea_with_pickers', 'id' => 'wse_pro_cart_msg1_template', 'css' => 'width:100%; min-height:100px;', 'default' => "Hola {customer_name}, olvidaste algo en tu carrito 🛒\nRecupera tus productos: {cart_link}"],
             
-            ['name' => __('Activar este mensaje', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_abandoned_cart_enable_msg_' . $message_number, 'desc' => sprintf(__('<strong>Enviar mensaje #%d</strong>', 'woowapp-smsenlinea-pro'), $message_number), 'default' => 'no'],
+            ['type' => 'coupon_config', 'id' => 'cart_msg1_coupon', 'message_num' => '1'],
             
-            ['name' => __('⏱️ Enviar después de', 'woowapp-smsenlinea-pro'), 'type' => 'time_selector', 'id' => 'wse_pro_abandoned_cart_time_selector_' . $message_number, 'message_number' => $message_number, 'default_time' => $default_times[$message_number], 'default_unit' => $default_units[$message_number], 'desc' => __('Define cuánto tiempo esperar después de que el cliente abandone el carrito.', 'woowapp-smsenlinea-pro')],
+            ['type' => 'sectionend', 'id' => 'cart_msg1_end'],
+
+            // CARRITO ABANDONADO - Mensaje 2
+            ['type' => 'message_header', 'id' => 'cart_msg2_header', 'title' => __('📱 Mensaje 2 - Carrito Abandonado', 'woowapp-smsenlinea-pro')],
+            ['name' => __('Activar Mensaje 2', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_cart_msg2_enable', 'default' => 'no'],
+            ['name' => __('Enviar después de (minutos)', 'woowapp-smsenlinea-pro'), 'type' => 'number', 'id' => 'wse_pro_cart_msg2_delay', 'default' => '120', 'custom_attributes' => ['min' => '1']],
+            ['name' => __('Plantilla del Mensaje', 'woowapp-smsenlinea-pro'), 'type' => 'textarea_with_pickers', 'id' => 'wse_pro_cart_msg2_template', 'css' => 'width:100%; min-height:100px;', 'default' => "¡Última oportunidad! 🎁\nTu carrito te espera: {cart_link}"],
             
-            ['name' => __('📝 Plantilla del mensaje', 'woowapp-smsenlinea-pro'), 'type' => 'textarea_with_pickers', 'id' => 'wse_pro_abandoned_cart_message_' . $message_number, 'css' => 'width:100%; height:90px;', 'default' => $default_messages[$message_number]],
+            ['type' => 'coupon_config', 'id' => 'cart_msg2_coupon', 'message_num' => '2'],
             
-            ['name' => __('💳 Configuración de Cupón', 'woowapp-smsenlinea-pro'), 'type' => 'coupon_config', 'id' => 'wse_pro_coupon_config_' . $message_number, 'message_number' => $message_number, 'default_discount' => $default_discounts[$message_number], 'default_expiry' => $default_expiry[$message_number]],
+            ['type' => 'sectionend', 'id' => 'cart_msg2_end'],
+
+            // CARRITO ABANDONADO - Mensaje 3
+            ['type' => 'message_header', 'id' => 'cart_msg3_header', 'title' => __('📱 Mensaje 3 - Carrito Abandonado', 'woowapp-smsenlinea-pro')],
+            ['name' => __('Activar Mensaje 3', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_cart_msg3_enable', 'default' => 'no'],
+            ['name' => __('Enviar después de (minutos)', 'woowapp-smsenlinea-pro'), 'type' => 'number', 'id' => 'wse_pro_cart_msg3_delay', 'default' => '1440', 'custom_attributes' => ['min' => '1']],
+            ['name' => __('Plantilla del Mensaje', 'woowapp-smsenlinea-pro'), 'type' => 'textarea_with_pickers', 'id' => 'wse_pro_cart_msg3_template', 'css' => 'width:100%; min-height:100px;', 'default' => "¡No pierdas esta oportunidad! 💥\nCompleta tu compra: {cart_link}"],
             
-            ['type' => 'sectionend', 'id' => 'wse_pro_cart_msg_' . $message_number . '_end'],
+            ['type' => 'coupon_config', 'id' => 'cart_msg3_coupon', 'message_num' => '3'],
+            
+            ['type' => 'sectionend', 'id' => 'cart_msg3_end'],
+
+            // NOTAS DE PEDIDO
+            ['name' => __('💬 Notificación de Notas', 'woowapp-smsenlinea-pro'), 'type' => 'title', 'id' => 'wse_pro_notes_title'],
+            ['name' => __('Activar Notificación de Notas', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_enable_notes', 'default' => 'yes'],
+            ['name' => __('Plantilla de Nota', 'woowapp-smsenlinea-pro'), 'type' => 'textarea_with_pickers', 'id' => 'wse_pro_notes_message', 'css' => 'width:100%; min-height:100px;', 'default' => "Hola {customer_name}, nueva nota en tu pedido #{order_id}:\n{note_content}"],
+            ['type' => 'sectionend', 'id' => 'wse_pro_notes_end'],
+
+            // RECORDATORIO DE RESEÑAS
+            ['name' => __('⭐ Recordatorio de Reseñas', 'woowapp-smsenlinea-pro'), 'type' => 'title', 'id' => 'wse_pro_review_title'],
+            ['name' => __('Activar Recordatorio de Reseñas', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_enable_review', 'default' => 'no'],
+            ['name' => __('Enviar después de (días)', 'woowapp-smsenlinea-pro'), 'type' => 'number', 'id' => 'wse_pro_review_delay_days', 'default' => '7', 'custom_attributes' => ['min' => '1']],
+            ['name' => __('Plantilla de Reseña', 'woowapp-smsenlinea-pro'), 'type' => 'textarea_with_pickers', 'id' => 'wse_pro_review_message', 'css' => 'width:100%; min-height:100px;', 'default' => "Hola {customer_name}, ¿qué tal tu compra?\nDéjanos tu opinión: {review_link}"],
+            
+            // Cupón por Reseña
+            ['name' => __('🎁 Cupón por Reseña', 'woowapp-smsenlinea-pro'), 'type' => 'title', 'id' => 'wse_pro_review_coupon_title', 'desc' => __('Recompensa a clientes que dejen reseñas', 'woowapp-smsenlinea-pro')],
+            ['name' => __('Activar Cupón por Reseña', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_review_coupon_enable', 'default' => 'no', 'desc' => __('Se genera al publicar reseña', 'woowapp-smsenlinea-pro')],
+            ['name' => __('Tipo de Descuento', 'woowapp-smsenlinea-pro'), 'type' => 'select', 'id' => 'wse_pro_review_coupon_type', 'options' => ['percent' => __('Porcentaje', 'woowapp-smsenlinea-pro'), 'fixed_cart' => __('Monto Fijo', 'woowapp-smsenlinea-pro')]],
+            ['name' => __('Valor del Descuento', 'woowapp-smsenlinea-pro'), 'type' => 'number', 'id' => 'wse_pro_review_coupon_amount', 'default' => '10', 'custom_attributes' => ['step' => '0.01', 'min' => '0']],
+            ['name' => __('Estrellas Mínimas', 'woowapp-smsenlinea-pro'), 'type' => 'select', 'id' => 'wse_pro_review_min_stars', 'default' => '4', 'options' => ['1' => '1⭐', '2' => '2⭐⭐', '3' => '3⭐⭐⭐', '4' => '4⭐⭐⭐⭐', '5' => '5⭐⭐⭐⭐⭐']],
+            ['name' => __('Días de Validez', 'woowapp-smsenlinea-pro'), 'type' => 'number', 'id' => 'wse_pro_review_coupon_validity', 'default' => '30', 'custom_attributes' => ['min' => '1']],
+            ['name' => __('Prefijo del Cupón', 'woowapp-smsenlinea-pro'), 'type' => 'text', 'id' => 'wse_pro_review_coupon_prefix', 'default' => 'REVIEW'],
+            
+            ['type' => 'sectionend', 'id' => 'wse_pro_review_end'],
         ];
     }
 
-    /**
-     * Renderiza el header visual de cada mensaje
-     */
     public function render_message_header($value) {
-        $icons = [1 => '📧', 2 => '🎁', 3 => '⏰'];
-        $colors = [1 => '#6366f1', 2 => '#f59e0b', 3 => '#ef4444'];
-        $msg_num = $value['message_number'];
         ?>
         <tr valign="top">
-            <td colspan="2" style="padding: 0;">
-                <div style="background: linear-gradient(135deg, <?php echo $colors[$msg_num]; ?> 0%, <?php echo $colors[$msg_num]; ?>dd 100%); color: white; padding: 15px 20px; border-radius: 8px; margin: 20px 0 10px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-                    <h3 style="margin: 0; font-size: 18px; display: flex; align-items: center; gap: 10px;">
-                        <span style="font-size: 24px;"><?php echo $icons[$msg_num]; ?></span>
-                        <?php echo esc_html($value['name']); ?>
-                    </h3>
-                </div>
-            </td>
-        </tr>
-        <?php
-    }
-
-    /**
-     * Renderiza el selector de tiempo (número + unidad)
-     */
-    public function render_time_selector($value) {
-        $msg_num = $value['message_number'];
-        $time_value = get_option('wse_pro_abandoned_cart_time_' . $msg_num, $value['default_time']);
-        $unit_value = get_option('wse_pro_abandoned_cart_unit_' . $msg_num, $value['default_unit']);
-        ?>
-        <tr valign="top">
-            <th scope="row" class="titledesc">
-                <label><?php echo esc_html($value['name']); ?></label>
+            <th colspan="2" style="padding: 20px 0 10px 0;">
+                <h3 style="margin: 0; padding: 10px; background: #f0f0f1; border-left: 4px solid #2271b1;">
+                    <?php echo esc_html($value['title']); ?>
+                </h3>
             </th>
-            <td class="forminp">
-                <div style="display: flex; align-items: center; gap: 10px;">
-                    <input 
-                        type="number" 
-                        name="wse_pro_abandoned_cart_time_<?php echo $msg_num; ?>" 
-                        value="<?php echo esc_attr($time_value); ?>" 
-                        min="1" 
-                        style="width: 100px;"
-                    >
-                    <select name="wse_pro_abandoned_cart_unit_<?php echo $msg_num; ?>" style="width: 150px;">
-                        <option value="minutes" <?php selected($unit_value, 'minutes'); ?>><?php _e('Minutos', 'woowapp-smsenlinea-pro'); ?></option>
-                        <option value="hours" <?php selected($unit_value, 'hours'); ?>><?php _e('Horas', 'woowapp-smsenlinea-pro'); ?></option>
-                        <option value="days" <?php selected($unit_value, 'days'); ?>><?php _e('Días', 'woowapp-smsenlinea-pro'); ?></option>
-                    </select>
-                </div>
-                <?php if (!empty($value['desc'])) : ?>
-                    <p class="description" style="margin-top: 8px;"><?php echo wp_kses_post($value['desc']); ?></p>
-                <?php endif; ?>
-            </td>
         </tr>
         <?php
     }
 
-    /**
-     * Renderiza la configuración de cupón
-     */
     public function render_coupon_config($value) {
-        $msg_num = $value['message_number'];
-        $enable = get_option('wse_pro_abandoned_cart_coupon_enable_' . $msg_num, 'no');
-        $type = get_option('wse_pro_abandoned_cart_coupon_type_' . $msg_num, 'percent');
-        $amount = get_option('wse_pro_abandoned_cart_coupon_amount_' . $msg_num, $value['default_discount']);
-        $expiry = get_option('wse_pro_abandoned_cart_coupon_expiry_' . $msg_num, $value['default_expiry']);
+        $msg_num = isset($value['message_num']) ? $value['message_num'] : '1';
+        $enable_id = "wse_pro_cart_msg{$msg_num}_coupon_enable";
+        $type_id = "wse_pro_cart_msg{$msg_num}_coupon_type";
+        $amount_id = "wse_pro_cart_msg{$msg_num}_coupon_amount";
+        $validity_id = "wse_pro_cart_msg{$msg_num}_coupon_validity";
+        $prefix_id = "wse_pro_cart_msg{$msg_num}_coupon_prefix";
+
+        $enable_value = get_option($enable_id, 'no');
+        $type_value = get_option($type_id, 'percent');
+        $amount_value = get_option($amount_id, '10');
+        $validity_value = get_option($validity_id, '7');
+        $prefix_value = get_option($prefix_id, "CART{$msg_num}");
         ?>
         <tr valign="top">
             <th scope="row" class="titledesc">
-                <label><?php echo esc_html($value['name']); ?></label>
+                <label><?php _e('🎁 Cupón de Descuento', 'woowapp-smsenlinea-pro'); ?></label>
             </th>
             <td class="forminp">
-                <div style="background: #f9fafb; padding: 20px; border-radius: 8px; border: 2px solid #e5e7eb;">
-                    <p style="margin: 0 0 15px 0;">
-                        <label style="display: flex; align-items: center; gap: 10px; font-weight: 600;">
-                            <input type="checkbox" name="wse_pro_abandoned_cart_coupon_enable_<?php echo $msg_num; ?>" value="yes" <?php checked($enable, 'yes'); ?> style="width: 20px; height: 20px;">
-                            <span><?php _e('Incluir cupón de descuento en este mensaje', 'woowapp-smsenlinea-pro'); ?></span>
+                <fieldset style="border: 1px solid #ddd; padding: 15px; background: #f9f9f9;">
+                    <legend style="padding: 0 10px; font-weight: 600;"><?php _e('Configuración del Cupón', 'woowapp-smsenlinea-pro'); ?></legend>
+                    
+                    <p style="margin-top: 0;">
+                        <label>
+                            <input type="checkbox" name="<?php echo esc_attr($enable_id); ?>" id="<?php echo esc_attr($enable_id); ?>" value="yes" <?php checked($enable_value, 'yes'); ?>>
+                            <?php _e('Incluir cupón en este mensaje', 'woowapp-smsenlinea-pro'); ?>
                         </label>
                     </p>
-                    
-                    <div class="coupon-options" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e5e7eb;">
-                        <p style="margin: 0 0 10px 0;">
-                            <label style="font-weight: 600; display: block; margin-bottom: 5px;">
-                                <?php _e('Tipo de descuento:', 'woowapp-smsenlinea-pro'); ?>
-                            </label>
-                            <select name="wse_pro_abandoned_cart_coupon_type_<?php echo $msg_num; ?>" style="width: 200px;">
-                                <option value="percent" <?php selected($type, 'percent'); ?>><?php _e('Porcentaje (%)', 'woowapp-smsenlinea-pro'); ?></option>
-                                <option value="fixed_cart" <?php selected($type, 'fixed_cart'); ?>><?php _e('Monto Fijo', 'woowapp-smsenlinea-pro'); ?></option>
+
+                    <div class="coupon-fields" style="margin-top: 15px;">
+                        <p>
+                            <label><?php _e('Tipo de Descuento:', 'woowapp-smsenlinea-pro'); ?></label><br>
+                            <select name="<?php echo esc_attr($type_id); ?>" style="width: 200px;">
+                                <option value="percent" <?php selected($type_value, 'percent'); ?>><?php _e('Porcentaje', 'woowapp-smsenlinea-pro'); ?></option>
+                                <option value="fixed_cart" <?php selected($type_value, 'fixed_cart'); ?>><?php _e('Monto Fijo', 'woowapp-smsenlinea-pro'); ?></option>
                             </select>
                         </p>
-                        
-                        <p style="margin: 0 0 10px 0;">
-                            <label style="font-weight: 600; display: block; margin-bottom: 5px;">
-                                <?php _e('Cantidad de descuento:', 'woowapp-smsenlinea-pro'); ?>
-                            </label>
-                            <input type="number" name="wse_pro_abandoned_cart_coupon_amount_<?php echo $msg_num; ?>" value="<?php echo esc_attr($amount); ?>" min="1" step="0.01" style="width: 120px;">
-                            <span style="color: #6b7280; font-size: 13px; margin-left: 8px;">
-                                <?php _e('(Ej: 10 para 10% o $10)', 'woowapp-smsenlinea-pro'); ?>
-                            </span>
+
+                        <p>
+                            <label><?php _e('Valor del Descuento:', 'woowapp-smsenlinea-pro'); ?></label><br>
+                            <input type="number" name="<?php echo esc_attr($amount_id); ?>" value="<?php echo esc_attr($amount_value); ?>" step="0.01" min="0" style="width: 100px;">
                         </p>
-                        
-                        <p style="margin: 0;">
-                            <label style="font-weight: 600; display: block; margin-bottom: 5px;">
-                                <?php _e('Válido por:', 'woowapp-smsenlinea-pro'); ?>
-                            </label>
-                            <input type="number" name="wse_pro_abandoned_cart_coupon_expiry_<?php echo $msg_num; ?>" value="<?php echo esc_attr($expiry); ?>" min="1" max="365" style="width: 80px;">
-                            <span style="margin-left: 8px;"><?php _e('días', 'woowapp-smsenlinea-pro'); ?></span>
+
+                        <p>
+                            <label><?php _e('Días de Validez:', 'woowapp-smsenlinea-pro'); ?></label><br>
+                            <input type="number" name="<?php echo esc_attr($validity_id); ?>" value="<?php echo esc_attr($validity_value); ?>" min="1" style="width: 100px;">
                         </p>
-                    </div>
-                    
-                    <div style="margin-top: 15px; padding: 12px; background: white; border-radius: 6px; border-left: 4px solid #6366f1;">
-                        <p style="margin: 0; font-size: 13px; color: #6b7280;">
-                            <strong style="color: #1f2937;">💡 Tip:</strong> 
-                            <?php _e('Usa las variables {coupon_code}, {coupon_amount} y {coupon_expires} en tu plantilla para mostrar la información del cupón.', 'woowapp-smsenlinea-pro'); ?>
+
+                        <p>
+                            <label><?php _e('Prefijo del Cupón:', 'woowapp-smsenlinea-pro'); ?></label><br>
+                            <input type="text" name="<?php echo esc_attr($prefix_id); ?>" value="<?php echo esc_attr($prefix_value); ?>" style="width: 150px;">
+                            <span class="description"><?php _e('Se generará: PREFIX-XXXXX', 'woowapp-smsenlinea-pro'); ?></span>
+                        </p>
+
+                        <p class="description">
+                            <?php _e('💡 Usa {coupon_code} en la plantilla para incluir el cupón', 'woowapp-smsenlinea-pro'); ?>
                         </p>
                     </div>
-                </div>
+                </fieldset>
             </td>
         </tr>
         <?php
     }
 
     public function render_textarea_with_pickers($value) {
-        $option_value = get_option($value['id'], $value['default']);
+        $option_value = get_option($value['id'], isset($value['default']) ? $value['default'] : '');
+        $placeholders = WSE_Pro_Placeholders::get_placeholders();
+        $emojis = WSE_Pro_Placeholders::get_emojis();
         ?>
         <tr valign="top">
             <th scope="row" class="titledesc">
                 <label for="<?php echo esc_attr($value['id']); ?>"><?php echo esc_html($value['name']); ?></label>
             </th>
-            <td class="forminp forminp-textarea">
-                <div class="wse-pro-field-wrapper">
-                    <div class="wse-pro-textarea-container">
-                        <textarea name="<?php echo esc_attr($value['id']); ?>" id="<?php echo esc_attr($value['id']); ?>" style="<?php echo esc_attr($value['css']); ?>"><?php echo esc_textarea($option_value); ?></textarea>
-                    </div>
-                    <div class="wse-pro-pickers-container">
-                        <div class="wc-wa-accordion-trigger">
-                            <span><?php esc_html_e('Variables y Emojis', 'woowapp-smsenlinea-pro'); ?></span>
-                            <span class="dashicons dashicons-arrow-down-alt2"></span>
-                        </div>
-                        
-                        <div class="wc-wa-accordion-content" style="display: none;" data-target-id="<?php echo esc_attr($value['id']); ?>">
-                            <div class="wc-wa-picker-group">
-                                <strong><?php esc_html_e('Variables:', 'woowapp-smsenlinea-pro'); ?></strong>
-                                <?php foreach (WSE_Pro_Placeholders::get_all_placeholders_grouped() as $group => $codes) : ?>
-                                    <div class="picker-subgroup">
-                                        <em><?php echo esc_html($group); ?>:</em><br>
-                                        <?php foreach ($codes as $code) : ?>
-                                            <button type="button" class="button button-small" data-value="<?php echo esc_attr($code); ?>"><?php echo esc_html($code); ?></button>
-                                        <?php endforeach; ?>
-                                    </div>
-                                <?php endforeach; ?>
-                            </div>
-                            <div class="wc-wa-picker-group">
-                                <strong><?php esc_html_e('Emojis:', 'woowapp-smsenlinea-pro'); ?></strong>
-                                <?php foreach (WSE_Pro_Placeholders::get_all_emojis_grouped() as $group => $icons) : ?>
-                                    <div class="picker-subgroup">
-                                        <em><?php echo esc_html($group); ?>:</em><br>
-                                        <?php foreach ($icons as $icon) : ?>
-                                            <button type="button" class="button button-small emoji-btn" data-value="<?php echo esc_attr($icon); ?>"><?php echo esc_html($icon); ?></button>
-                                        <?php endforeach; ?>
-                                    </div>
-                                <?php endforeach; ?>
-                            </div>
-                        </div>
+            <td class="forminp">
+                <textarea 
+                    name="<?php echo esc_attr($value['id']); ?>" 
+                    id="<?php echo esc_attr($value['id']); ?>" 
+                    style="<?php echo esc_attr($value['css']); ?>" 
+                    class="wse-pro-message-template"><?php echo esc_textarea($option_value); ?></textarea>
+                
+                <div class="picker-buttons" style="margin-top: 10px;">
+                    <button type="button" class="button wse-insert-placeholder" data-target="<?php echo esc_attr($value['id']); ?>">
+                        📋 <?php _e('Insertar Variable', 'woowapp-smsenlinea-pro'); ?>
+                    </button>
+                    <button type="button" class="button wse-insert-emoji" data-target="<?php echo esc_attr($value['id']); ?>">
+                        😊 <?php _e('Insertar Emoji', 'woowapp-smsenlinea-pro'); ?>
+                    </button>
+                </div>
+
+                <div class="wse-placeholder-list" style="display:none; margin-top:10px; max-width:400px;">
+                    <select class="wse-placeholder-select" style="width:100%;">
+                        <option value=""><?php _e('-- Selecciona una variable --', 'woowapp-smsenlinea-pro'); ?></option>
+                        <?php foreach ($placeholders as $key => $label): ?>
+                            <option value="<?php echo esc_attr($key); ?>"><?php echo esc_html($key . ' - ' . $label); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <div class="wse-emoji-list" style="display:none; margin-top:10px;">
+                    <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(40px,1fr)); gap:5px; max-width:400px;">
+                        <?php foreach ($emojis as $emoji): ?>
+                            <button type="button" class="button wse-emoji-btn" data-emoji="<?php echo esc_attr($emoji); ?>" style="padding:5px;"><?php echo $emoji; ?></button>
+                        <?php endforeach; ?>
                     </div>
                 </div>
+
+                <?php if (isset($value['desc'])): ?>
+                    <p class="description"><?php echo $value['desc']; ?></p>
+                <?php endif; ?>
             </td>
         </tr>
         <?php
     }
 
     public function render_button_field($value) {
-        $field_description = WC_Admin_Settings::get_field_description($value);
         ?>
         <tr valign="top">
-            <th scope="row" class="titledesc">
-                <label for="<?php echo esc_attr($value['id']); ?>"><?php echo esc_html($value['title']); ?></label>
-                <?php echo $field_description['tooltip_html']; ?>
-            </th>
-            <td class="forminp forminp-button">
-                <button type="button" id="<?php echo esc_attr($value['id']); ?>" class="<?php echo esc_attr($value['class']); ?>"><?php echo esc_html($value['value']); ?></button>
-                <?php echo $field_description['description']; ?>
+            <th scope="row" class="titledesc"></th>
+            <td class="forminp">
+                <button type="button" id="<?php echo esc_attr($value['id']); ?>" class="<?php echo esc_attr($value['class']); ?>">
+                    <?php echo esc_html($value['value']); ?>
+                </button>
+                <?php if (isset($value['desc'])): echo $value['desc']; endif; ?>
             </td>
         </tr>
         <?php
     }
 
+    public function sanitize_textarea_fields($settings) {
+        foreach ($settings as $key => $value) {
+            if (strpos($key, '_message') !== false || strpos($key, '_template') !== false) {
+                $settings[$key] = sanitize_textarea_field($value);
+            }
+        }
+        return $settings;
+    }
+
     public function enqueue_admin_scripts($hook) {
-        if ('woocommerce_page_wc-settings' !== $hook) return;
-        if (!isset($_GET['tab']) || 'woowapp' !== $_GET['tab']) return;
+        if ($hook !== 'woocommerce_page_wc-settings') return;
+        if (!isset($_GET['tab']) || $_GET['tab'] !== 'woowapp') return;
 
         wp_enqueue_style('wse-pro-admin-css', WSE_PRO_URL . 'assets/css/admin.css', [], '1.1');
         wp_enqueue_script('wse-pro-admin-js', WSE_PRO_URL . 'assets/js/admin.js', ['jquery'], '1.1', true);
-        wp_localize_script('wse-pro-admin-js', 'wse_pro_admin_params', [
+
+        wp_localize_script('wse-pro-admin-js', 'wseProAdmin', [
             'ajax_url' => admin_url('admin-ajax.php'),
-            'nonce'    => wp_create_nonce('wse_pro_send_test_nonce')
+            'nonce' => wp_create_nonce('wse_pro_test_nonce'),
         ]);
     }
 }
+
+new WSE_Pro_Settings();
