@@ -3,7 +3,7 @@
  * Maneja toda la comunicación con las APIs de SMSenlinea y la lógica de envío de mensajes.
  *
  * @package WooWApp
- * @version 1.6.0
+ * @version 1.1
  */
 
 if (!defined('ABSPATH')) {
@@ -116,7 +116,7 @@ class WSE_Pro_API_Handler {
      *
      * @param string $phone       Número de teléfono de destino.
      * @param string $message     El mensaje a enviar.
-     * @param mixed  $data_source El objeto WC_Order, la fila de la BD del carrito, o null.
+     * @param mixed  $data_source El objeto WC_Order, objeto de carrito, o null.
      * @param string $type        El tipo de destinatario (customer, admin, test).
      * @return array              Respuesta de la operación.
      */
@@ -127,6 +127,7 @@ class WSE_Pro_API_Handler {
         $full_phone = $this->format_phone($phone, $country);
         
         if (empty($full_phone) || empty($message)) {
+            $this->log(__('Envío cancelado: Número de teléfono o mensaje vacío.', 'woowapp-smsenlinea-pro'));
             return ['success' => false, 'message' => __('Número de teléfono o mensaje vacío.', 'woowapp-smsenlinea-pro')];
         }
 
@@ -174,7 +175,7 @@ class WSE_Pro_API_Handler {
             if ($data_source && 'yes' === $attach_image) {
                 if (is_a($data_source, 'WC_Order')) {
                     $image_url = WSE_Pro_Placeholders::get_first_product_image_url($data_source);
-                } elseif (isset($data_source->cart_contents)) {
+                } elseif (is_object($data_source) && isset($data_source->cart_contents)) {
                     $image_url = WSE_Pro_Placeholders::get_first_cart_item_image_url($data_source->cart_contents);
                 }
             }
@@ -245,7 +246,8 @@ class WSE_Pro_API_Handler {
                 if ('yes' === $attach_image) {
                     $image_url = WSE_Pro_Placeholders::get_first_product_image_url($data_source);
                 }
-            } elseif (isset($data_source->cart_contents)) {
+            } elseif (is_object($data_source) && isset($data_source->cart_contents)) {
+                // Es un objeto de carrito abandonado
                 $attach_image = get_option('wse_pro_abandoned_cart_attach_image', 'no');
                 if ('yes' === $attach_image) {
                     $image_url = WSE_Pro_Placeholders::get_first_cart_item_image_url($data_source->cart_contents);
@@ -303,16 +305,24 @@ class WSE_Pro_API_Handler {
      */
     private function handle_response($response, $phone, $data_source, $type = 'customer') {
         $order_id_log = 'N/A';
-        if ($data_source && is_a($data_source, 'WC_Order')) $order_id_log = '#' . $data_source->get_id();
-        if ($data_source && isset($data_source->cart_contents)) $order_id_log = 'Cart #' . $data_source->id;
-        if (is_null($data_source)) $order_id_log = 'Test';
+        
+        // Mejorar la identificación del origen
+        if ($data_source && is_a($data_source, 'WC_Order')) {
+            $order_id_log = '#' . $data_source->get_id();
+        } elseif ($data_source && is_object($data_source) && isset($data_source->id)) {
+            $order_id_log = 'Cart #' . $data_source->id;
+        } elseif (is_null($data_source)) {
+            $order_id_log = 'Test';
+        }
         
         $recipient_log = ('admin' === $type) ? __('Admin', 'woowapp-smsenlinea-pro') : __('Cliente', 'woowapp-smsenlinea-pro');
 
         if (is_wp_error($response)) {
             $error = $response->get_error_message();
             $this->log(sprintf('Fallo API (Ref: %s, Dest: %s). Error: %s', $order_id_log, $recipient_log, $error));
-            if($data_source && is_a($data_source, 'WC_Order')) $data_source->add_order_note(sprintf(__('Error WhatsApp (%s): %s', 'woowapp-smsenlinea-pro'), $recipient_log, $error));
+            if($data_source && is_a($data_source, 'WC_Order')) {
+                $data_source->add_order_note(sprintf(__('Error WhatsApp (%s): %s', 'woowapp-smsenlinea-pro'), $recipient_log, $error));
+            }
             return ['success' => false, 'message' => $error];
         }
 
@@ -326,7 +336,10 @@ class WSE_Pro_API_Handler {
             $message_id = $body['data']['messageId'] ?? $body['data']['id'] ?? 'N/A';
             $note = sprintf(__('Notificación WhatsApp enviada a %s (%s).', 'woowapp-smsenlinea-pro'), $recipient_log, $phone);
             $this->log(sprintf('Éxito (Ref: %s, Tel: %s, Dest: %s). ID: %s', $order_id_log, $phone, $recipient_log, $message_id));
-            if($data_source && is_a($data_source, 'WC_Order')) $data_source->add_order_note($note);
+            
+            if($data_source && is_a($data_source, 'WC_Order')) {
+                $data_source->add_order_note($note);
+            }
             
             $success_message = $is_panel1_queued_success ? __('Mensaje encolado para envío.', 'woowapp-smsenlinea-pro') : __('Enviado exitosamente.', 'woowapp-smsenlinea-pro');
             
@@ -336,7 +349,11 @@ class WSE_Pro_API_Handler {
             $error = $body['solution'] ?? $body['message'] ?? __('Error desconocido', 'woowapp-smsenlinea-pro');
             $note = sprintf(__('Fallo al enviar WhatsApp a %s (%s). Razón: %s', 'woowapp-smsenlinea-pro'), $recipient_log, $phone, $error);
             $this->log(sprintf('Fallo (Ref: %s, Tel: %s, Dest: %s). Razón: %s', $order_id_log, $phone, $recipient_log, $error));
-            if($data_source && is_a($data_source, 'WC_Order')) $data_source->add_order_note($note);
+            
+            if($data_source && is_a($data_source, 'WC_Order')) {
+                $data_source->add_order_note($note);
+            }
+            
             return ['success' => false, 'message' => $error];
         }
     }
