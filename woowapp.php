@@ -372,23 +372,49 @@ final class WooWApp {
     private function send_abandoned_cart_message($cart_id, $message_number) {
         global $wpdb;
         
+        // Log de inicio
+        if (class_exists('WC_Logger')) {
+            $logger = wc_get_logger();
+            $logger->info("Intentando enviar mensaje #{$message_number} para carrito #{$cart_id}", ['source' => 'wse-pro-cart']);
+        }
+        
         $cart_row = $wpdb->get_row($wpdb->prepare(
             "SELECT * FROM " . self::$abandoned_cart_table_name . " WHERE id = %d", 
             $cart_id
         ));
 
-        if (!$cart_row || $cart_row->status !== 'active') {
+        if (!$cart_row) {
+            if (class_exists('WC_Logger')) {
+                $logger = wc_get_logger();
+                $logger->error("Carrito #{$cart_id} no encontrado en BD", ['source' => 'wse-pro-cart']);
+            }
+            return;
+        }
+
+        if ($cart_row->status !== 'active') {
+            if (class_exists('WC_Logger')) {
+                $logger = wc_get_logger();
+                $logger->info("Carrito #{$cart_id} no está activo (status: {$cart_row->status})", ['source' => 'wse-pro-cart']);
+            }
             return;
         }
 
         // Verificar que este mensaje no se haya enviado ya
         $messages_sent = explode(',', $cart_row->messages_sent);
-        if ($messages_sent[$message_number - 1] == '1') {
-            return; // Ya se envió este mensaje
+        if (isset($messages_sent[$message_number - 1]) && $messages_sent[$message_number - 1] == '1') {
+            if (class_exists('WC_Logger')) {
+                $logger = wc_get_logger();
+                $logger->info("Mensaje #{$message_number} ya fue enviado para carrito #{$cart_id}", ['source' => 'wse-pro-cart']);
+            }
+            return;
         }
 
         $template = get_option('wse_pro_abandoned_cart_message_' . $message_number);
         if (empty($template)) {
+            if (class_exists('WC_Logger')) {
+                $logger = wc_get_logger();
+                $logger->error("Plantilla de mensaje #{$message_number} está vacía", ['source' => 'wse-pro-cart']);
+            }
             return;
         }
 
@@ -415,32 +441,62 @@ final class WooWApp {
                 'coupon_type'     => 'cart_recovery'
             ]);
 
-            if (!is_wp_error($coupon_result)) {
+            if (is_wp_error($coupon_result)) {
+                if (class_exists('WC_Logger')) {
+                    $logger = wc_get_logger();
+                    $logger->error("Error generando cupón: " . $coupon_result->get_error_message(), ['source' => 'wse-pro-cart']);
+                }
+            } else {
                 $coupon_data = $coupon_result;
+                if (class_exists('WC_Logger')) {
+                    $logger = wc_get_logger();
+                    $logger->info("Cupón generado: {$coupon_data['coupon_code']}", ['source' => 'wse-pro-cart']);
+                }
             }
         }
 
-        $api_handler = new WSE_Pro_API_Handler();
+        // Reemplazar placeholders
         $message = WSE_Pro_Placeholders::replace_for_cart($template, $cart_row, $coupon_data);
-        $api_handler->send_message($cart_row->phone, $message, $cart_row, 'customer');
-
-        // Marcar mensaje como enviado
-        $messages_sent[$message_number - 1] = '1';
-        $new_status = implode(',', $messages_sent);
         
-        $wpdb->update(
-            self::$abandoned_cart_table_name,
-            ['messages_sent' => $new_status],
-            ['id' => $cart_id]
-        );
+        if (class_exists('WC_Logger')) {
+            $logger = wc_get_logger();
+            $logger->info("Mensaje preparado para {$cart_row->phone}: " . substr($message, 0, 100), ['source' => 'wse-pro-cart']);
+        }
 
-        // Si es el último mensaje, cambiar status a 'sent'
-        if ($message_number == 3 || !$this->has_more_messages_pending($message_number)) {
+        // Crear objeto temporal con la estructura correcta para el API handler
+        $cart_obj = new stdClass();
+        $cart_obj->id = $cart_row->id;
+        $cart_obj->phone = $cart_row->phone;
+        $cart_obj->cart_contents = $cart_row->cart_contents; // Mantener serializado para compatibilidad
+        
+        // Enviar mensaje
+        $api_handler = new WSE_Pro_API_Handler();
+        $result = $api_handler->send_message($cart_row->phone, $message, $cart_obj, 'customer');
+
+        if (class_exists('WC_Logger')) {
+            $logger = wc_get_logger();
+            $logger->info("Resultado envío: " . ($result['success'] ? 'ÉXITO' : 'FALLO - ' . $result['message']), ['source' => 'wse-pro-cart']);
+        }
+
+        // Marcar mensaje como enviado solo si se envió correctamente
+        if ($result['success']) {
+            $messages_sent[$message_number - 1] = '1';
+            $new_status = implode(',', $messages_sent);
+            
             $wpdb->update(
                 self::$abandoned_cart_table_name,
-                ['status' => 'sent'],
+                ['messages_sent' => $new_status],
                 ['id' => $cart_id]
             );
+
+            // Si es el último mensaje, cambiar status a 'sent'
+            if ($message_number == 3 || !$this->has_more_messages_pending($message_number)) {
+                $wpdb->update(
+                    self::$abandoned_cart_table_name,
+                    ['status' => 'sent'],
+                    ['id' => $cart_id]
+                );
+            }
         }
     }
 
