@@ -21,7 +21,8 @@ class WSE_Pro_Settings {
         add_action('woocommerce_admin_field_message_header', [$this, 'render_message_header']);
         add_action('woocommerce_admin_field_time_selector', [$this, 'render_time_selector']);
 
-        add_filter('woocommerce_settings_api_sanitized_fields_woowapp', [$this, 'sanitize_textarea_fields']);
+        // NUEVO: Hook para procesar el guardado de campos de cupón
+        add_action('woocommerce_update_options_woowapp', [$this, 'save_coupon_fields'], 5);
     }
 
     public function add_settings_tab($settings_tabs) {
@@ -53,57 +54,72 @@ class WSE_Pro_Settings {
         woocommerce_update_options($this->get_settings($current_section));
     }
 
-    public function sanitize_textarea_fields($sanitized_settings) {
-        $all_settings = $this->get_settings(true);
-        
-        // Sanitizar textareas normales
-        foreach ($all_settings as $setting) {
-            if (isset($setting['id'], $setting['type']) && in_array($setting['type'], ['textarea', 'textarea_with_pickers'])) {
-                $option_id = $setting['id'];
-                if (isset($_POST[$option_id])) {
-                    $sanitized_settings[$option_id] = sanitize_textarea_field(wp_unslash($_POST[$option_id]));
-                }
-            }
+    /**
+     * NUEVO: Método dedicado para guardar campos de cupón
+     */
+    public function save_coupon_fields() {
+        // Solo procesar si estamos en la sección de notificaciones
+        if (!isset($_GET['section']) || $_GET['section'] !== 'notifications') {
+            return;
         }
-        
-        // Sanitizar campos de tiempo y cupones personalizados
+
+        // Verificar nonce de WooCommerce
+        if (!isset($_POST['_wpnonce']) || !wp_verify_nonce($_POST['_wpnonce'], 'woocommerce-settings')) {
+            return;
+        }
+
+        // Procesar los 3 mensajes
         for ($i = 1; $i <= 3; $i++) {
-            // Tiempo
-            $time_key = 'wse_pro_abandoned_cart_time_' . $i;
-            if (isset($_POST[$time_key])) {
-                $sanitized_settings[$time_key] = intval($_POST[$time_key]);
-            }
-            
-            // Unidad de tiempo
-            $unit_key = 'wse_pro_abandoned_cart_unit_' . $i;
-            if (isset($_POST[$unit_key])) {
-                $sanitized_settings[$unit_key] = sanitize_text_field($_POST[$unit_key]);
-            }
-            
             // Checkbox de activar cupón
             $enable_key = 'wse_pro_abandoned_cart_coupon_enable_' . $i;
-            $sanitized_settings[$enable_key] = isset($_POST[$enable_key]) ? 'yes' : 'no';
+            $enable_value = isset($_POST[$enable_key]) ? 'yes' : 'no';
+            update_option($enable_key, $enable_value);
             
             // Tipo de cupón
             $type_key = 'wse_pro_abandoned_cart_coupon_type_' . $i;
             if (isset($_POST[$type_key])) {
-                $sanitized_settings[$type_key] = sanitize_text_field($_POST[$type_key]);
+                $type_value = sanitize_text_field($_POST[$type_key]);
+                // Validar que sea un tipo válido
+                if (in_array($type_value, ['percent', 'fixed_cart', 'fixed_product'])) {
+                    update_option($type_key, $type_value);
+                }
             }
             
             // Cantidad de descuento
             $amount_key = 'wse_pro_abandoned_cart_coupon_amount_' . $i;
             if (isset($_POST[$amount_key])) {
-                $sanitized_settings[$amount_key] = floatval($_POST[$amount_key]);
+                $amount_value = floatval($_POST[$amount_key]);
+                if ($amount_value > 0) {
+                    update_option($amount_key, $amount_value);
+                }
             }
             
             // Días de expiración
             $expiry_key = 'wse_pro_abandoned_cart_coupon_expiry_' . $i;
             if (isset($_POST[$expiry_key])) {
-                $sanitized_settings[$expiry_key] = intval($_POST[$expiry_key]);
+                $expiry_value = intval($_POST[$expiry_key]);
+                if ($expiry_value > 0 && $expiry_value <= 365) {
+                    update_option($expiry_key, $expiry_value);
+                }
+            }
+
+            // Tiempo y unidad (también los guardamos aquí para asegurar consistencia)
+            $time_key = 'wse_pro_abandoned_cart_time_' . $i;
+            if (isset($_POST[$time_key])) {
+                $time_value = intval($_POST[$time_key]);
+                if ($time_value > 0) {
+                    update_option($time_key, $time_value);
+                }
+            }
+            
+            $unit_key = 'wse_pro_abandoned_cart_unit_' . $i;
+            if (isset($_POST[$unit_key])) {
+                $unit_value = sanitize_text_field($_POST[$unit_key]);
+                if (in_array($unit_value, ['minutes', 'hours', 'days'])) {
+                    update_option($unit_key, $unit_value);
+                }
             }
         }
-        
-        return $sanitized_settings;
     }
 
     public function get_settings($section = '') {
@@ -190,14 +206,12 @@ class WSE_Pro_Settings {
             ['name' => __('Plantilla del mensaje', 'woowapp-smsenlinea-pro'), 'type' => 'textarea_with_pickers', 'id' => 'wse_pro_review_reminder_message', 'css' => 'width:100%; height:75px;', 'default' => __('¡Hola {customer_name}! ¿Te importaría dejar una reseña de {first_product_name}? {first_product_review_link}', 'woowapp-smsenlinea-pro')],
             ['type' => 'sectionend', 'id' => 'wse_pro_review_reminders_end'],
             
-            // NUEVA SECCIÓN: Recuperación de Carrito con 3 Mensajes
             ['name' => __('🛒 Recuperación de Carrito Abandonado', 'woowapp-smsenlinea-pro'), 'type' => 'title', 'id' => 'wse_pro_abandoned_cart_title', 'desc' => __('Configura hasta 3 mensajes progresivos con descuentos crecientes para recuperar ventas.', 'woowapp-smsenlinea-pro')],
             ['name' => __('Activar recuperación de carrito', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_enable_abandoned_cart', 'desc' => __('<strong>Activar sistema de recuperación.</strong>', 'woowapp-smsenlinea-pro'), 'default' => 'no'],
             ['name' => __('Adjuntar imagen del primer producto', 'woowapp-smsenlinea-pro'), 'type' => 'checkbox', 'id' => 'wse_pro_abandoned_cart_attach_image', 'desc' => __('Incluir imagen en mensajes.', 'woowapp-smsenlinea-pro'), 'default' => 'no'],
             ['type' => 'sectionend', 'id' => 'wse_pro_abandoned_cart_general_end'],
         ];
 
-        // Configuración de los 3 mensajes
         for ($i = 1; $i <= 3; $i++) {
             $settings = array_merge($settings, $this->get_cart_message_settings($i));
         }
@@ -205,9 +219,6 @@ class WSE_Pro_Settings {
         return $settings;
     }
 
-    /**
-     * Genera la configuración para un mensaje específico de carrito
-     */
     private function get_cart_message_settings($message_number) {
         $default_times = [1 => 60, 2 => 1, 3 => 3];
         $default_units = [1 => 'minutes', 2 => 'days', 3 => 'days'];
@@ -241,9 +252,6 @@ class WSE_Pro_Settings {
         ];
     }
 
-    /**
-     * Renderiza el header visual de cada mensaje
-     */
     public function render_message_header($value) {
         $icons = [1 => '📧', 2 => '🎁', 3 => '⏰'];
         $colors = [1 => '#6366f1', 2 => '#f59e0b', 3 => '#ef4444'];
@@ -262,9 +270,6 @@ class WSE_Pro_Settings {
         <?php
     }
 
-    /**
-     * Renderiza el selector de tiempo (número + unidad)
-     */
     public function render_time_selector($value) {
         $msg_num = $value['message_number'];
         $time_value = get_option('wse_pro_abandoned_cart_time_' . $msg_num, $value['default_time']);
@@ -297,9 +302,6 @@ class WSE_Pro_Settings {
         <?php
     }
 
-    /**
-     * Renderiza la configuración de cupón
-     */
     public function render_coupon_config($value) {
         $msg_num = $value['message_number'];
         $enable = get_option('wse_pro_abandoned_cart_coupon_enable_' . $msg_num, 'no');
