@@ -3,7 +3,7 @@
  * Plugin Name:       WooWApp
  * Plugin URI:        https://smsenlinea.com
  * Description:       Una solución robusta para enviar notificaciones de WhatsApp a los clientes de WooCommerce utilizando la API de SMSenlinea. Incluye recordatorios de reseñas y recuperación de carritos abandonados.
- * Version:           2.2.0
+ * Version:           2.2.1
  * Author:            smsenlinea
  * Author URI:        https://smsenlinea.com
  * License:           GPL-2.0+
@@ -17,7 +17,8 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('WSE_PRO_VERSION', '2.2.0');
+define('WSE_PRO_VERSION', '2.2.1');
+define('WSE_PRO_DB_VERSION', '2.2.1'); // Nueva constante para versionado de BD
 define('WSE_PRO_PATH', plugin_dir_path(__FILE__));
 define('WSE_PRO_URL', plugin_dir_url(__FILE__));
 
@@ -49,18 +50,43 @@ final class WooWApp {
         global $wpdb;
         self::$abandoned_cart_table_name = $wpdb->prefix . 'wse_pro_abandoned_carts';
         add_action('plugins_loaded', [$this, 'init']);
+        
+        // Hook para verificar y actualizar la base de datos en cada carga
+        add_action('plugins_loaded', [$this, 'maybe_upgrade_database'], 5);
     }
 
     /**
      * Se ejecuta al activar el plugin
      */
     public static function on_activation() {
-        global $wpdb;
-        $table_name = $wpdb->prefix . 'wse_pro_abandoned_carts';
-        $charset_collate = $wpdb->get_charset_collate();
+        // Crear tablas con estructura correcta
+        self::create_database_tables();
+        
+        // Crear página de reseñas
+        self::create_review_page();
+        
+        // Programar crons
+        self::schedule_cron_events();
+        
+        // Guardar versión de BD
+        update_option('wse_pro_db_version', WSE_PRO_DB_VERSION);
+        
+        flush_rewrite_rules();
+    }
 
-        // Tabla de carritos abandonados sin campos de tiempo individuales
-        $sql = "CREATE TABLE IF NOT EXISTS $table_name (
+    /**
+     * Crea las tablas de base de datos con la estructura correcta
+     */
+    private static function create_database_tables() {
+        global $wpdb;
+        
+        $charset_collate = $wpdb->get_charset_collate();
+        $table_name = $wpdb->prefix . 'wse_pro_abandoned_carts';
+        $coupons_table = $wpdb->prefix . 'wse_pro_coupons_generated';
+
+        // Tabla de carritos abandonados - ESTRUCTURA CORRECTA v2.2.1
+        // NOTA: NO incluye 'scheduled_time', USA 'messages_sent'
+        $sql_carts = "CREATE TABLE IF NOT EXISTS $table_name (
             id BIGINT(20) NOT NULL AUTO_INCREMENT,
             user_id BIGINT(20) UNSIGNED NOT NULL DEFAULT 0,
             session_id VARCHAR(191) NOT NULL,
@@ -77,25 +103,134 @@ final class WooWApp {
             PRIMARY KEY (id),
             UNIQUE KEY recovery_token (recovery_token),
             KEY session_id (session_id),
-            KEY status (status)
+            KEY status (status),
+            KEY updated_at (updated_at)
+        ) $charset_collate;";
+
+        // Tabla de cupones
+        $sql_coupons = "CREATE TABLE IF NOT EXISTS $coupons_table (
+            id BIGINT(20) NOT NULL AUTO_INCREMENT,
+            coupon_code VARCHAR(50) NOT NULL,
+            customer_phone VARCHAR(40) DEFAULT NULL,
+            customer_email VARCHAR(100) DEFAULT NULL,
+            cart_id BIGINT(20) DEFAULT NULL,
+            order_id BIGINT(20) DEFAULT NULL,
+            message_number INT DEFAULT 0,
+            coupon_type VARCHAR(20) NOT NULL,
+            discount_type VARCHAR(20) NOT NULL,
+            discount_amount DECIMAL(10,2) NOT NULL,
+            usage_limit INT DEFAULT 1,
+            used TINYINT DEFAULT 0,
+            created_at DATETIME NOT NULL,
+            expires_at DATETIME NOT NULL,
+            PRIMARY KEY (id),
+            UNIQUE KEY coupon_code (coupon_code),
+            KEY customer_phone (customer_phone),
+            KEY cart_id (cart_id)
         ) $charset_collate;";
 
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
-        dbDelta($sql);
+        dbDelta($sql_carts);
+        dbDelta($sql_coupons);
+    }
 
-        require_once WSE_PRO_PATH . 'includes/class-wse-pro-coupon-manager.php';
-        WSE_Pro_Coupon_Manager::create_coupons_table();
-        self::create_review_page();
+    /**
+     * Verifica y actualiza la base de datos si es necesario (para sitios existentes)
+     */
+    public function maybe_upgrade_database() {
+        $current_db_version = get_option('wse_pro_db_version', '0');
         
-        // Programar el cron maestro de carritos y la limpieza de cupones
+        // Si la versión de BD no coincide, ejecutar migración
+        if (version_compare($current_db_version, WSE_PRO_DB_VERSION, '<')) {
+            $this->upgrade_database($current_db_version);
+            update_option('wse_pro_db_version', WSE_PRO_DB_VERSION);
+        }
+        
+        // Verificar que el cron esté programado (por si se desconfiguró)
+        $this->ensure_cron_scheduled();
+    }
+
+    /**
+     * Ejecuta las migraciones necesarias según la versión anterior
+     */
+    private function upgrade_database($from_version) {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'wse_pro_abandoned_carts';
+        
+        // Verificar que la tabla existe
+        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '$table_name'") === $table_name;
+        if (!$table_exists) {
+            // Si la tabla no existe, crearla con estructura correcta
+            self::create_database_tables();
+            return;
+        }
+
+        // Obtener columnas actuales
+        $columns = $wpdb->get_results("DESCRIBE $table_name");
+        $column_names = array_column($columns, 'Field');
+        
+        // MIGRACIÓN: Agregar messages_sent si no existe
+        if (!in_array('messages_sent', $column_names)) {
+            $wpdb->query("ALTER TABLE $table_name ADD COLUMN messages_sent VARCHAR(20) DEFAULT '0,0,0' AFTER status");
+            
+            // Inicializar carritos existentes
+            $wpdb->query("UPDATE $table_name SET messages_sent = '0,0,0' WHERE messages_sent IS NULL OR messages_sent = ''");
+        }
+        
+        // MIGRACIÓN: Eliminar scheduled_time si existe (columna obsoleta)
+        if (in_array('scheduled_time', $column_names)) {
+            $wpdb->query("ALTER TABLE $table_name DROP COLUMN scheduled_time");
+        }
+        
+        // MIGRACIÓN: Agregar índice en updated_at si no existe
+        $indexes = $wpdb->get_results("SHOW INDEX FROM $table_name WHERE Key_name = 'updated_at'");
+        if (empty($indexes)) {
+            $wpdb->query("ALTER TABLE $table_name ADD KEY updated_at (updated_at)");
+        }
+    }
+
+    /**
+     * Asegura que el cron esté programado
+     */
+    private function ensure_cron_scheduled() {
+        // Verificar que el intervalo personalizado esté registrado
+        add_filter('cron_schedules', function($schedules) {
+            if (!isset($schedules['five_minutes'])) {
+                $schedules['five_minutes'] = [
+                    'interval' => 5 * MINUTE_IN_SECONDS,
+                    'display'  => __('Cada 5 minutos', 'woowapp-smsenlinea-pro')
+                ];
+            }
+            return $schedules;
+        });
+        
+        // Programar eventos si no están programados
         if (!wp_next_scheduled('wse_pro_process_abandoned_carts')) {
             wp_schedule_event(time(), 'five_minutes', 'wse_pro_process_abandoned_carts');
         }
+        
         if (!wp_next_scheduled('wse_pro_cleanup_coupons')) {
             wp_schedule_event(time(), 'daily', 'wse_pro_cleanup_coupons');
         }
+    }
+
+    /**
+     * Programa los eventos cron
+     */
+    private static function schedule_cron_events() {
+        // Limpiar eventos anteriores
+        wp_clear_scheduled_hook('wse_pro_process_abandoned_carts');
+        wp_clear_scheduled_hook('wse_pro_cleanup_coupons');
         
-        flush_rewrite_rules();
+        // Programar cron maestro de carritos (cada 5 minutos)
+        if (!wp_next_scheduled('wse_pro_process_abandoned_carts')) {
+            wp_schedule_event(time(), 'five_minutes', 'wse_pro_process_abandoned_carts');
+        }
+        
+        // Programar limpieza de cupones (diaria)
+        if (!wp_next_scheduled('wse_pro_cleanup_coupons')) {
+            wp_schedule_event(time(), 'daily', 'wse_pro_cleanup_coupons');
+        }
     }
 
     /**
@@ -147,7 +282,7 @@ final class WooWApp {
             if(!isset($schedules['five_minutes'])){
                 $schedules['five_minutes'] = [
                     'interval' => 5 * MINUTE_IN_SECONDS,
-                    'display'  => __('Cada 5 minutos'),
+                    'display'  => __('Cada 5 minutos', 'woowapp-smsenlinea-pro'),
                 ];
             }
             return $schedules;
@@ -251,20 +386,28 @@ final class WooWApp {
         $existing_cart = $wpdb->get_row($wpdb->prepare("SELECT id FROM " . self::$abandoned_cart_table_name . " WHERE session_id = %s AND status = 'active'", $session_id));
         
         $cart_data = [
-            'user_id' => $user_id, 'session_id' => $session_id,
-            'first_name' => $first_name, 'phone' => $phone,
-            'cart_contents' => $cart_contents, 'cart_total' => $cart_total,
-            'checkout_data' => $checkout_data, 'updated_at' => $current_time,
+            'user_id' => $user_id, 
+            'session_id' => $session_id,
+            'first_name' => $first_name, 
+            'phone' => $phone,
+            'cart_contents' => $cart_contents, 
+            'cart_total' => $cart_total,
+            'checkout_data' => $checkout_data, 
+            'updated_at' => $current_time,
             'messages_sent' => '0,0,0'
         ];
+        
+        $format = ['%d', '%s', '%s', '%s', '%s', '%f', '%s', '%s', '%s'];
 
         if ($existing_cart) {
-            $wpdb->update(self::$abandoned_cart_table_name, $cart_data, ['id' => $existing_cart->id]);
+            $wpdb->update(self::$abandoned_cart_table_name, $cart_data, ['id' => $existing_cart->id], $format, ['%d']);
             $cart_id = $existing_cart->id;
         } else {
             $cart_data['created_at'] = $current_time;
             $cart_data['recovery_token'] = bin2hex(random_bytes(16));
-            $wpdb->insert(self::$abandoned_cart_table_name, $cart_data);
+            $format[] = '%s';
+            $format[] = '%s';
+            $wpdb->insert(self::$abandoned_cart_table_name, $cart_data, $format);
             $cart_id = $wpdb->insert_id;
         }
 
@@ -323,8 +466,10 @@ final class WooWApp {
                 'discount_type'   => get_option('wse_pro_abandoned_cart_coupon_type_' . $message_number, 'percent'),
                 'discount_amount' => (float) get_option('wse_pro_abandoned_cart_coupon_amount_' . $message_number, 10),
                 'expiry_days'     => (int) get_option('wse_pro_abandoned_cart_coupon_expiry_' . $message_number, 7),
-                'customer_phone'  => $cart_row->phone, 'customer_email' => $customer_email,
-                'cart_id' => $cart_row->id, 'message_number' => $message_number,
+                'customer_phone'  => $cart_row->phone, 
+                'customer_email' => $customer_email,
+                'cart_id' => $cart_row->id, 
+                'message_number' => $message_number,
                 'coupon_type'     => 'cart_recovery'
             ]);
             if (!is_wp_error($coupon_result)) $coupon_data = $coupon_result;
@@ -391,7 +536,6 @@ final class WooWApp {
         $recovered_data = WC()->session->get('wse_pro_recovered_checkout_data');
         if ($recovered_data && isset($recovered_data[$input])) {
             $data_to_return = $recovered_data[$input];
-            // Clear session data after populating
             unset($recovered_data[$input]);
             WC()->session->set('wse_pro_recovered_checkout_data', $recovered_data);
             return $data_to_return;
@@ -461,9 +605,13 @@ final class WooWApp {
             }
 
             $commentdata = [
-                'comment_post_ID'      => $product_id, 'comment_author' => $order->get_billing_first_name(),
-                'comment_author_email' => $order->get_billing_email(), 'comment_content' => $comment_text,
-                'user_id' => $order->get_user_id() ?: 0, 'comment_approved' => 0, 'comment_type' => 'review'
+                'comment_post_ID'      => $product_id, 
+                'comment_author' => $order->get_billing_first_name(),
+                'comment_author_email' => $order->get_billing_email(), 
+                'comment_content' => $comment_text,
+                'user_id' => $order->get_user_id() ?: 0, 
+                'comment_approved' => 0, 
+                'comment_type' => 'review'
             ];
             $comment_id = wp_insert_comment($commentdata);
 
