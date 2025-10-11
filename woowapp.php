@@ -3,7 +3,7 @@
  * Plugin Name:       WooWApp
  * Plugin URI:        https://smsenlinea.com
  * Description:       Una solución robusta para enviar notificaciones de WhatsApp a los clientes de WooCommerce utilizando la API de SMSenlinea. Incluye recordatorios de reseñas y recuperación de carritos abandonados.
- * Version:           1.1.0
+ * Version:           2.2.0
  * Author:            smsenlinea
  * Author URI:        https://smsenlinea.com
  * License:           GPL-2.0+
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('WSE_PRO_VERSION', '1.1.0');
+define('WSE_PRO_VERSION', '2.2.0');
 define('WSE_PRO_PATH', plugin_dir_path(__FILE__));
 define('WSE_PRO_URL', plugin_dir_url(__FILE__));
 
@@ -37,7 +37,6 @@ final class WooWApp {
 
     private static $instance;
     private static $abandoned_cart_table_name;
-    private static $coupons_table_name;
 
     public static function get_instance() {
         if (null === self::$instance) {
@@ -49,7 +48,6 @@ final class WooWApp {
     private function __construct() {
         global $wpdb;
         self::$abandoned_cart_table_name = $wpdb->prefix . 'wse_pro_abandoned_carts';
-        self::$coupons_table_name = $wpdb->prefix . 'wse_pro_coupons_generated';
         add_action('plugins_loaded', [$this, 'init']);
     }
 
@@ -58,12 +56,11 @@ final class WooWApp {
      */
     public static function on_activation() {
         global $wpdb;
-        $charset_collate = $wpdb->get_charset_collate();
-        require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
-
-        // Tabla de carritos abandonados
         $table_name = $wpdb->prefix . 'wse_pro_abandoned_carts';
-        $sql_carts = "CREATE TABLE $table_name (
+        $charset_collate = $wpdb->get_charset_collate();
+
+        // Tabla de carritos abandonados sin campos de tiempo individuales
+        $sql = "CREATE TABLE IF NOT EXISTS $table_name (
             id BIGINT(20) NOT NULL AUTO_INCREMENT,
             user_id BIGINT(20) UNSIGNED NOT NULL DEFAULT 0,
             session_id VARCHAR(191) NOT NULL,
@@ -82,16 +79,15 @@ final class WooWApp {
             KEY session_id (session_id),
             KEY status (status)
         ) $charset_collate;";
-        dbDelta($sql_carts);
 
-        // Tabla de cupones
+        require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+        dbDelta($sql);
+
         require_once WSE_PRO_PATH . 'includes/class-wse-pro-coupon-manager.php';
         WSE_Pro_Coupon_Manager::create_coupons_table();
-
-        // Crear la página de reseñas
         self::create_review_page();
         
-        // Programar cron maestro de carritos y limpieza de cupones
+        // Programar el cron maestro de carritos y la limpieza de cupones
         if (!wp_next_scheduled('wse_pro_process_abandoned_carts')) {
             wp_schedule_event(time(), 'five_minutes', 'wse_pro_process_abandoned_carts');
         }
@@ -103,7 +99,7 @@ final class WooWApp {
     }
 
     /**
-     * Se ejecuta al desactivar el plugin
+     * Se ejecuta al desactivar el plugin para limpiar las tareas programadas.
      */
     public static function on_deactivation() {
         wp_clear_scheduled_hook('wse_pro_process_abandoned_carts');
@@ -159,17 +155,29 @@ final class WooWApp {
     }
 
     /**
-     * Verifica si la página de reseñas existe
+     * Verifica si la página de reseñas existe y muestra un aviso.
      */
     public function check_review_page_exists() {
-        // ... (código sin cambios)
+        $page_id = get_option('wse_pro_review_page_id');
+        if (!$page_id || get_post_status($page_id) !== 'publish') {
+            $screen = get_current_screen();
+            if ($screen && $screen->id === 'woocommerce_page_wc-settings') {
+                echo '<div class="notice notice-warning"><p><strong>WooWApp:</strong> ' .
+                     __('La página de reseñas no existe o no está publicada. ', 'woowapp-smsenlinea-pro') .
+                     '<a href="' . esc_url(admin_url('admin.php?page=wc-settings&tab=woowapp&action=recreate_review_page')) . '">' .
+                     __('Haz clic aquí para recrearla', 'woowapp-smsenlinea-pro') . '</a></p></div>';
+            }
+        }
     }
 
     /**
      * Incluye los archivos de clases del plugin.
      */
     public function includes() {
-        // ... (código sin cambios)
+        require_once WSE_PRO_PATH . 'includes/class-wse-pro-settings.php';
+        require_once WSE_PRO_PATH . 'includes/class-wse-pro-api-handler.php';
+        require_once WSE_PRO_PATH . 'includes/class-wse-pro-placeholders.php';
+        require_once WSE_PRO_PATH . 'includes/class-wse-pro-coupon-manager.php';
     }
 
     /**
@@ -197,10 +205,7 @@ final class WooWApp {
             add_action('wp_ajax_wse_pro_capture_cart', [$this, 'capture_cart_via_ajax']);
             add_action('wp_ajax_nopriv_wse_pro_capture_cart', [$this, 'capture_cart_via_ajax']);
             add_action('woocommerce_new_order', [$this, 'cancel_abandoned_cart_reminder'], 10, 1);
-            
-            // Hook para el cron maestro
             add_action('wse_pro_process_abandoned_carts', [$this, 'process_abandoned_carts_cron']);
-            
             add_action('template_redirect', [$this, 'handle_cart_recovery_link']);
             add_filter('woocommerce_checkout_get_value', [$this, 'populate_checkout_fields'], 10, 2);
         }
@@ -213,16 +218,16 @@ final class WooWApp {
         add_action('woocommerce_order_action_wse_send_review_request', [$this, 'process_manual_review_request_action']);
     }
 
-    /**
-     * Carga el script de JS solo en la página de pago.
-     */
     public function enqueue_frontend_scripts() {
-        // ... (código sin cambios)
+        if (is_checkout()) {
+            wp_enqueue_script('wse-pro-frontend-js', WSE_PRO_URL . 'assets/js/frontend.js', ['jquery'], WSE_PRO_VERSION, true);
+            wp_localize_script('wse-pro-frontend-js', 'wse_pro_frontend_params', [
+                'ajax_url' => admin_url('admin-ajax.php'),
+                'nonce'    => wp_create_nonce('wse_pro_capture_cart_nonce')
+            ]);
+        }
     }
 
-    /**
-     * Captura el carrito y lo guarda en la BD. Ya no programa eventos.
-     */
     public function capture_cart_via_ajax() {
         check_ajax_referer('wse_pro_capture_cart_nonce', 'security');
         global $wpdb;
@@ -243,21 +248,14 @@ final class WooWApp {
         $cart_total = $cart->get_total('edit');
         $current_time = current_time('mysql');
         
-        $existing_cart = $wpdb->get_row($wpdb->prepare(
-            "SELECT id FROM " . self::$abandoned_cart_table_name . " WHERE session_id = %s AND status = 'active'", 
-            $session_id
-        ));
+        $existing_cart = $wpdb->get_row($wpdb->prepare("SELECT id FROM " . self::$abandoned_cart_table_name . " WHERE session_id = %s AND status = 'active'", $session_id));
         
         $cart_data = [
-            'user_id'          => $user_id,
-            'session_id'       => $session_id,
-            'first_name'       => $first_name,
-            'phone'            => $phone,
-            'cart_contents'    => $cart_contents,
-            'cart_total'       => $cart_total,
-            'checkout_data'    => $checkout_data,
-            'updated_at'       => $current_time,
-            'messages_sent'    => '0,0,0',
+            'user_id' => $user_id, 'session_id' => $session_id,
+            'first_name' => $first_name, 'phone' => $phone,
+            'cart_contents' => $cart_contents, 'cart_total' => $cart_total,
+            'checkout_data' => $checkout_data, 'updated_at' => $current_time,
+            'messages_sent' => '0,0,0'
         ];
 
         if ($existing_cart) {
@@ -277,34 +275,19 @@ final class WooWApp {
 
         wp_send_json_success(['message' => 'Carrito capturado.', 'cart_id' => $cart_id]);
     }
-    
-    /**
-     * Cron Maestro: Se ejecuta cada 5 minutos para procesar carritos pendientes
-     */
+
     public function process_abandoned_carts_cron() {
         global $wpdb;
-        $table_name = self::$abandoned_cart_table_name;
-        
-        $active_carts = $wpdb->get_results(
-            "SELECT * FROM $table_name WHERE status = 'active' AND messages_sent != '1,1,1'"
-        );
-
-        if (empty($active_carts)) {
-            return;
-        }
+        $active_carts = $wpdb->get_results("SELECT * FROM " . self::$abandoned_cart_table_name . " WHERE status = 'active' AND messages_sent != '1,1,1'");
+        if (empty($active_carts)) return;
 
         foreach ($active_carts as $cart) {
             $messages_sent = explode(',', $cart->messages_sent);
             $last_update_time = strtotime($cart->updated_at);
 
             for ($i = 1; $i <= 3; $i++) {
-                if (isset($messages_sent[$i - 1]) && $messages_sent[$i - 1] == '1') {
-                    continue;
-                }
-
-                if (get_option('wse_pro_abandoned_cart_enable_msg_' . $i, 'no') !== 'yes') {
-                    continue;
-                }
+                if (isset($messages_sent[$i - 1]) && $messages_sent[$i - 1] == '1') continue;
+                if (get_option('wse_pro_abandoned_cart_enable_msg_' . $i, 'no') !== 'yes') continue;
 
                 $delay = (int) get_option('wse_pro_abandoned_cart_time_' . $i, 60);
                 $unit = get_option('wse_pro_abandoned_cart_unit_' . $i, 'minutes');
@@ -317,22 +300,16 @@ final class WooWApp {
 
                 if (time() >= ($last_update_time + $seconds_to_wait)) {
                     $this->send_abandoned_cart_message($cart, $i);
-                    break; 
+                    break;
                 }
             }
         }
     }
 
-    /**
-     * Envía un mensaje específico de recuperación de carrito
-     */
     private function send_abandoned_cart_message($cart_row, $message_number) {
         global $wpdb;
-        
         $template = get_option('wse_pro_abandoned_cart_message_' . $message_number);
-        if (empty($template)) {
-            return;
-        }
+        if (empty($template)) return;
 
         $coupon_data = null;
         if (get_option('wse_pro_abandoned_cart_coupon_enable_' . $message_number, 'no') === 'yes') {
@@ -342,30 +319,19 @@ final class WooWApp {
                 parse_str($cart_row->checkout_data, $checkout_fields);
                 $customer_email = $checkout_fields['billing_email'] ?? '';
             }
-
             $coupon_result = $coupon_manager->generate_coupon([
                 'discount_type'   => get_option('wse_pro_abandoned_cart_coupon_type_' . $message_number, 'percent'),
                 'discount_amount' => (float) get_option('wse_pro_abandoned_cart_coupon_amount_' . $message_number, 10),
                 'expiry_days'     => (int) get_option('wse_pro_abandoned_cart_coupon_expiry_' . $message_number, 7),
-                'customer_phone'  => $cart_row->phone,
-                'customer_email'  => $customer_email,
-                'cart_id'         => $cart_row->id,
-                'message_number'  => $message_number,
+                'customer_phone'  => $cart_row->phone, 'customer_email' => $customer_email,
+                'cart_id' => $cart_row->id, 'message_number' => $message_number,
                 'coupon_type'     => 'cart_recovery'
             ]);
-
-            if (!is_wp_error($coupon_result)) {
-                $coupon_data = $coupon_result;
-            }
+            if (!is_wp_error($coupon_result)) $coupon_data = $coupon_result;
         }
 
         $message = WSE_Pro_Placeholders::replace_for_cart($template, $cart_row, $coupon_data);
-        
-        $cart_obj = (object) [
-            'id' => $cart_row->id,
-            'phone' => $cart_row->phone,
-            'cart_contents' => $cart_row->cart_contents
-        ];
+        $cart_obj = (object)['id' => $cart_row->id, 'phone' => $cart_row->phone, 'cart_contents' => $cart_row->cart_contents];
         
         $api_handler = new WSE_Pro_API_Handler();
         $result = $api_handler->send_message($cart_row->phone, $message, $cart_obj, 'customer');
@@ -373,19 +339,20 @@ final class WooWApp {
         if ($result['success']) {
             $messages_sent = explode(',', $cart_row->messages_sent);
             $messages_sent[$message_number - 1] = '1';
-            $new_status_str = implode(',', $messages_sent);
-            
-            $update_data = ['messages_sent' => $new_status_str];
-            
+            $update_data = ['messages_sent' => implode(',', $messages_sent)];
             if ($message_number == 3 || !$this->has_more_messages_pending($message_number)) {
                 $update_data['status'] = 'sent';
             }
-            
             $wpdb->update(self::$abandoned_cart_table_name, $update_data, ['id' => $cart_row->id]);
         }
     }
-    
-    // ... (El resto de las funciones, como `handle_cart_recovery_link`, `cancel_abandoned_cart_reminder`, etc., están completas y correctas en las respuestas anteriores, por lo que las incluyo aquí sin cambios significativos)
+
+    private function has_more_messages_pending($current_message) {
+        for ($i = $current_message + 1; $i <= 3; $i++) {
+            if (get_option('wse_pro_abandoned_cart_enable_msg_' . $i, 'no') === 'yes') return true;
+        }
+        return false;
+    }
 
     public function handle_cart_recovery_link() {
         if (!isset($_GET['recover-cart-wse'])) return;
@@ -403,8 +370,8 @@ final class WooWApp {
                 }
             }
 
-            // Aplicar cupón si existe
-            $coupon = WSE_Pro_Coupon_Manager::get_coupon_for_cart($cart_row->id);
+            $coupon_manager = new WSE_Pro_Coupon_Manager();
+            $coupon = $coupon_manager->get_latest_coupon_for_cart($cart_row->id);
             if($coupon && !WC()->cart->has_discount($coupon->coupon_code)){
                 WC()->cart->apply_coupon($coupon->coupon_code);
             }
@@ -423,9 +390,11 @@ final class WooWApp {
     public function populate_checkout_fields($value, $input) {
         $recovered_data = WC()->session->get('wse_pro_recovered_checkout_data');
         if ($recovered_data && isset($recovered_data[$input])) {
-            // Limpiar la sesión después de usar los datos
-            WC()->session->set('wse_pro_recovered_checkout_data', null);
-            return $recovered_data[$input];
+            $data_to_return = $recovered_data[$input];
+            // Clear session data after populating
+            unset($recovered_data[$input]);
+            WC()->session->set('wse_pro_recovered_checkout_data', $recovered_data);
+            return $data_to_return;
         }
         return $value;
     }
@@ -441,16 +410,7 @@ final class WooWApp {
             $wpdb->update(self::$abandoned_cart_table_name, ['status' => 'recovered'], ['id' => $active_cart->id]);
         }
     }
-
-    private function has_more_messages_pending($current_message) {
-        for ($i = $current_message + 1; $i <= 3; $i++) {
-            if (get_option('wse_pro_abandoned_cart_enable_msg_' . $i, 'no') === 'yes') {
-                return true;
-            }
-        }
-        return false;
-    }
-
+    
     public function trigger_status_change_notification($order_id, $order) {
         $api_handler = new WSE_Pro_API_Handler();
         $api_handler->handle_status_change($order_id, $order);
@@ -480,13 +440,91 @@ final class WooWApp {
         $api_handler->send_message($order->get_billing_phone(), $message, $order, 'customer');
     }
 
-    public function render_review_form_shortcode($atts) { return $this->get_review_form_html(); }
-    public function get_review_form_html(){ /* ... Contenido de la función ... */ }
-    public function handle_custom_review_page_content($content){ /* ... Contenido de la función ... */ }
-    public function add_manual_review_request_action($actions){ /* ... Contenido de la función ... */ }
-    public function process_manual_review_request_action($order){ /* ... Contenido de la función ... */ }
-    public function missing_wc_notice() { /* ... Contenido de la función ... */ }
+    public function render_review_form_shortcode($atts) {
+        return $this->get_review_form_html();
+    }
+
+    private function get_review_form_html() {
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['wse_review_nonce'])) {
+            if (!wp_verify_nonce($_POST['wse_review_nonce'], 'wse_submit_review')) {
+                return '<div class="woocommerce-error">' . __('Error de seguridad. Inténtalo de nuevo.', 'woowapp-smsenlinea-pro') . '</div>';
+            }
+
+            $order_id = isset($_POST['review_order_id']) ? absint($_POST['review_order_id']) : 0;
+            $product_id = isset($_POST['review_product_id']) ? absint($_POST['review_product_id']) : 0;
+            $rating = isset($_POST['review_rating']) ? absint($_POST['review_rating']) : 5;
+            $comment_text = isset($_POST['review_comment']) ? sanitize_textarea_field($_POST['review_comment']) : '';
+            
+            $order = wc_get_order($order_id);
+            if (!$order) {
+                return '<div class="woocommerce-error">' . __('Pedido no válido.', 'woowapp-smsenlinea-pro') . '</div>';
+            }
+
+            $commentdata = [
+                'comment_post_ID'      => $product_id, 'comment_author' => $order->get_billing_first_name(),
+                'comment_author_email' => $order->get_billing_email(), 'comment_content' => $comment_text,
+                'user_id' => $order->get_user_id() ?: 0, 'comment_approved' => 0, 'comment_type' => 'review'
+            ];
+            $comment_id = wp_insert_comment($commentdata);
+
+            if ($comment_id) {
+                add_comment_meta($comment_id, 'rating', $rating);
+                return '<div class="woocommerce-message">' . __('¡Gracias por tu reseña! Ha sido enviada y será publicada tras la aprobación.', 'woowapp-smsenlinea-pro') . '</div>';
+            } else {
+                return '<div class="woocommerce-error">' . __('Hubo un error al enviar tu reseña.', 'woowapp-smsenlinea-pro') . '</div>';
+            }
+        }
+
+        $order_id = isset($_GET['order_id']) ? absint($_GET['order_id']) : 0;
+        $order_key = isset($_GET['key']) ? sanitize_text_field($_GET['key']) : '';
+        if ($order_id > 0 && !empty($order_key)) {
+            $order = wc_get_order($order_id);
+            if ($order && $order->get_order_key() === $order_key) {
+                $html = '<div class="woowapp-review-container"><h3>' . __('Deja una reseña para los productos de tu pedido #', 'woowapp-smsenlinea-pro') . $order->get_order_number() . '</h3>';
+                foreach ($order->get_items() as $item) {
+                    $product = $item->get_product();
+                    if (!$product) continue;
+                    $html .= '<div class="review-form-wrapper" style="border:1px solid #ddd; padding:20px; margin-bottom:20px; border-radius: 5px;"><h4>' . esc_html($product->get_name()) . '</h4>' .
+                             '<form method="post" class="woowapp-review-form">' .
+                             '<p class="comment-form-rating"><label for="review_rating-' . $product->get_id() . '">' . __('Tu calificación', 'woowapp-smsenlinea-pro') . '&nbsp;<span class="required">*</span></label><select name="review_rating" id="review_rating-' . $product->get_id() . '" required><option value="5">★★★★★</option><option value="4">★★★★☆</option><option value="3">★★★☆☆</option><option value="2">★★☆☆☆</option><option value="1">★☆☆☆☆</option></select></p>' .
+                             '<p class="comment-form-comment"><label for="review_comment-' . $product->get_id() . '">' . __('Tu reseña', 'woowapp-smsenlinea-pro') . '</label><textarea name="review_comment" id="review_comment-' . $product->get_id() . '" cols="45" rows="8"></textarea></p>' .
+                             '<input type="hidden" name="review_order_id" value="' . esc_attr($order_id) . '" /><input type="hidden" name="review_product_id" value="' . esc_attr($product->get_id()) . '" />' .
+                             wp_nonce_field('wse_submit_review', 'wse_review_nonce', true, false) .
+                             '<p class="form-submit"><input name="submit" type="submit" class="submit button" value="' . __('Enviar Reseña', 'woowapp-smsenlinea-pro') . '" /></p></form></div>';
+                }
+                $html .= '</div>';
+                return $html;
+            }
+        }
+        return '<div class="woocommerce-error">' . __('Enlace de reseña no válido o caducado.', 'woowapp-smsenlinea-pro') . '</div>';
+    }
+
+    public function handle_custom_review_page_content($content) {
+        $page_id = get_option('wse_pro_review_page_id');
+        if (!is_page($page_id) || has_shortcode($content, 'woowapp_review_form')) {
+            return $content;
+        }
+        return $content . $this->get_review_form_html();
+    }
+
+    public function add_manual_review_request_action($actions) {
+        $actions['wse_send_review_request'] = __('Enviar solicitud de reseña por WhatsApp/SMS', 'woowapp-smsenlinea-pro');
+        return $actions;
+    }
+
+    public function process_manual_review_request_action($order) {
+        $template = get_option('wse_pro_review_reminder_message');
+        if (!empty($template)) {
+            $this->send_review_reminder_notification($order->get_id());
+            $order->add_order_note(__('Solicitud de reseña enviada manualmente al cliente.', 'woowapp-smsenlinea-pro'));
+        } else {
+            $order->add_order_note(__('Fallo al enviar solicitud de reseña: La plantilla de mensaje está vacía.', 'woowapp-smsenlinea-pro'));
+        }
+    }
+
+    public function missing_wc_notice() {
+        echo '<div class="error"><p><strong>' . esc_html__('WooWApp', 'woowapp-smsenlinea-pro') . ':</strong> ' . esc_html__('Este plugin requiere que WooCommerce esté instalado y activo para funcionar.', 'woowapp-smsenlinea-pro') . '</p></div>';
+    }
 }
 
 WooWApp::get_instance();
-
