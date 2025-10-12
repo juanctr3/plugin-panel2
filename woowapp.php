@@ -686,6 +686,7 @@ final class WooWApp {
 
     /**
      * 🔧 ENVIAR MENSAJE - VERSIÓN COMPLETAMENTE REESCRITA v2.2.2
+     * 🆕 Incluye protección anti-spam y límite de mensajes
      */
     private function send_abandoned_cart_message($cart_row, $message_number) {
         global $wpdb;
@@ -702,6 +703,39 @@ final class WooWApp {
         $messages_sent = explode(',', $cart_row->messages_sent);
         if (isset($messages_sent[$message_number - 1]) && $messages_sent[$message_number - 1] == '1') {
             $this->log_info("⚠️ Mensaje #{$message_number} ya enviado anteriormente");
+            return false;
+        }
+        
+        // 🔧 FIX 5: Verificar límite de mensajes por teléfono en 24 horas
+        $phone = $cart_row->phone;
+        if (!empty($phone)) {
+            $messages_last_24h = $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM " . self::$tracking_table_name . " t
+                 JOIN " . self::$abandoned_cart_table_name . " c ON t.cart_id = c.id
+                 WHERE c.phone = %s 
+                 AND t.event_type = 'sent'
+                 AND t.created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)",
+                $phone
+            ));
+            
+            // 🚫 Máximo 3 mensajes en 24 horas por teléfono
+            if ($messages_last_24h >= 3) {
+                $this->log_warning("🚫 LÍMITE ALCANZADO: {$phone} ya recibió {$messages_last_24h} mensajes en 24h");
+                return false;
+            }
+        }
+        
+        // 🔧 FIX 6: Verificar cooldown después de click (1 hora)
+        $clicked_recently = $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM " . self::$tracking_table_name . " 
+             WHERE cart_id = %d 
+             AND event_type = 'click' 
+             AND created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)",
+            $cart_row->id
+        ));
+        
+        if ($clicked_recently > 0) {
+            $this->log_info("⏳ COOLDOWN: Usuario hizo click hace menos de 1 hora - Esperando");
             return false;
         }
         
@@ -825,8 +859,16 @@ final class WooWApp {
                 exit();
             }
 
-            // 🆕 Registrar click
+            // 🆕 Registrar click ANTES de cualquier otra acción
             $this->track_event($cart_row->id, 0, 'click', []);
+            
+            // 🔧 FIX 7: Marcar en sesión que viene de recuperación
+            // Esto previene que se cree un nuevo carrito inmediatamente
+            WC()->session->set('wse_recovering_cart', [
+                'cart_id' => $cart_row->id,
+                'timestamp' => current_time('timestamp'),
+                'phone' => $cart_row->phone
+            ]);
 
             if ($cart_row->status === 'recovered') {
                 $this->log_info("Carrito ya recuperado - ID: {$cart_row->id}");
@@ -922,14 +964,10 @@ final class WooWApp {
                 $this->log_warning("Error aplicando cupón: " . $e->getMessage());
             }
 
-            // Marcar como recuperado
-            $wpdb->update(
-                self::$abandoned_cart_table_name,
-                ['status' => 'recovered'],
-                ['id' => $cart_row->id],
-                ['%s'],
-                ['%d']
-            );
+            // 🔧 FIX 8: NO marcar como recuperado aún
+            // Solo marcarlo cuando complete la compra
+            // Esto permite que vuelva si no completa la compra
+            // pero el cooldown de 1 hora previene spam
 
             if ($products_restored > 0) {
                 wc_add_notice(
