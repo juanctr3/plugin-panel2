@@ -184,6 +184,9 @@ final class WooWApp {
     public function maybe_upgrade_database() {
         $current_db_version = get_option('wse_pro_db_version', '0');
         
+        // SIEMPRE verificar integridad de la BD
+        $this->verify_and_repair_database();
+        
         if (version_compare($current_db_version, WSE_PRO_DB_VERSION, '<')) {
             $this->upgrade_database($current_db_version);
             update_option('wse_pro_db_version', WSE_PRO_DB_VERSION);
@@ -197,6 +200,61 @@ final class WooWApp {
         }
         
         $this->ensure_cron_scheduled();
+    }
+    
+    /**
+     * Verifica y repara la estructura de BD automáticamente
+     */
+    private function verify_and_repair_database() {
+        global $wpdb;
+        $table_name = self::$abandoned_cart_table_name;
+        
+        // Verificar que la tabla existe
+        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '$table_name'") === $table_name;
+        
+        if (!$table_exists) {
+            self::create_database_tables();
+            return;
+        }
+        
+        // Obtener columnas actuales
+        $columns = $wpdb->get_results("DESCRIBE $table_name");
+        $column_names = array_column($columns, 'Field');
+        
+        // Lista de columnas requeridas v2.2.2
+        $required_columns = [
+            'billing_first_name' => "VARCHAR(100) DEFAULT ''",
+            'billing_last_name' => "VARCHAR(100) DEFAULT ''",
+            'billing_email' => "VARCHAR(255) DEFAULT ''",
+            'billing_phone' => "VARCHAR(50) DEFAULT ''",
+            'billing_address_1' => "VARCHAR(255) DEFAULT ''",
+            'billing_city' => "VARCHAR(100) DEFAULT ''",
+            'billing_state' => "VARCHAR(100) DEFAULT ''",
+            'billing_postcode' => "VARCHAR(20) DEFAULT ''",
+            'billing_country' => "VARCHAR(2) DEFAULT ''",
+            'messages_sent' => "VARCHAR(20) DEFAULT '0,0,0'",
+        ];
+        
+        // Agregar columnas faltantes
+        foreach ($required_columns as $column => $definition) {
+            if (!in_array($column, $column_names)) {
+                $wpdb->query("ALTER TABLE $table_name ADD COLUMN $column $definition");
+            }
+        }
+        
+        // Eliminar columnas obsoletas
+        $obsolete_columns = ['scheduled_time'];
+        foreach ($obsolete_columns as $column) {
+            if (in_array($column, $column_names)) {
+                $wpdb->query("ALTER TABLE $table_name DROP COLUMN $column");
+            }
+        }
+        
+        // Verificar tabla de tracking
+        $tracking_exists = $wpdb->get_var("SHOW TABLES LIKE '" . self::$tracking_table_name . "'") === self::$tracking_table_name;
+        if (!$tracking_exists) {
+            self::create_database_tables();
+        }
     }
 
     private function upgrade_database($from_version) {
@@ -383,6 +441,12 @@ final class WooWApp {
     public function init_classes() {
         new WSE_Pro_Settings();
         WSE_Pro_Stats_Dashboard::get_instance();
+        
+        // Agregar página de diagnóstico en admin
+        if (is_admin()) {
+            add_action('admin_menu', [$this, 'add_diagnostic_menu'], 99);
+            add_action('admin_init', [$this, 'handle_diagnostic_actions']);
+        }
         
         if (isset($_GET['action']) && $_GET['action'] === 'recreate_review_page' && is_admin()) {
             self::create_review_page();
@@ -1233,6 +1297,354 @@ final class WooWApp {
      * UTILIDADES Y LOGGING
      * ========================================
      */
+    
+    /**
+     * Agregar menú de diagnóstico
+     */
+    public function add_diagnostic_menu() {
+        add_submenu_page(
+            'woocommerce',
+            __('Diagnóstico WooWApp', 'woowapp-smsenlinea-pro'),
+            __('🔍 Diagnóstico WooWApp', 'woowapp-smsenlinea-pro'),
+            'manage_woocommerce',
+            'woowapp-diagnostic',
+            [$this, 'render_diagnostic_page']
+        );
+    }
+    
+    /**
+     * Renderizar página de diagnóstico
+     */
+    public function render_diagnostic_page() {
+        global $wpdb;
+        
+        ?>
+        <div class="wrap">
+            <h1>🔍 Diagnóstico WooWApp Pro v<?php echo WSE_PRO_VERSION; ?></h1>
+            
+            <?php if (isset($_GET['repaired'])): ?>
+            <div class="notice notice-success">
+                <p><strong>✅ Reparación completada exitosamente.</strong></p>
+            </div>
+            <?php endif; ?>
+            
+            <!-- Información del Plugin -->
+            <div class="card" style="margin-top:20px;">
+                <h2>📦 Información del Plugin</h2>
+                <table class="widefat">
+                    <tr>
+                        <th>Versión Plugin</th>
+                        <td><?php echo WSE_PRO_VERSION; ?></td>
+                        <td><?php echo WSE_PRO_VERSION === '2.2.2' ? '✅' : '❌'; ?></td>
+                    </tr>
+                    <tr>
+                        <th>Versión BD</th>
+                        <td><?php echo get_option('wse_pro_db_version', '0'); ?></td>
+                        <td><?php echo get_option('wse_pro_db_version') === '2.2.2' ? '✅' : '⚠️'; ?></td>
+                    </tr>
+                </table>
+            </div>
+            
+            <!-- Estructura de Base de Datos -->
+            <div class="card" style="margin-top:20px;">
+                <h2>🗄️ Estructura de Base de Datos</h2>
+                <?php
+                $table = self::$abandoned_cart_table_name;
+                $table_exists = $wpdb->get_var("SHOW TABLES LIKE '$table'") === $table;
+                
+                if ($table_exists) {
+                    $columns = $wpdb->get_results("DESCRIBE $table");
+                    $column_names = array_column($columns, 'Field');
+                    
+                    $required = [
+                        'id', 'session_id', 'phone', 'cart_contents', 'cart_total',
+                        'billing_first_name', 'billing_last_name', 'billing_email', 'billing_phone',
+                        'billing_address_1', 'billing_city', 'billing_state', 'billing_postcode', 'billing_country',
+                        'status', 'messages_sent', 'created_at', 'updated_at', 'recovery_token'
+                    ];
+                    
+                    $missing = array_diff($required, $column_names);
+                    $obsolete = array_intersect(['scheduled_time'], $column_names);
+                    ?>
+                    
+                    <table class="widefat">
+                        <tr>
+                            <th>Tabla Carritos</th>
+                            <td><?php echo count($column_names); ?> columnas</td>
+                            <td><?php echo empty($missing) ? '✅' : '❌'; ?></td>
+                        </tr>
+                        <?php if (!empty($missing)): ?>
+                        <tr>
+                            <th>Columnas Faltantes</th>
+                            <td colspan="2" style="color:#ef4444;">
+                                <?php echo implode(', ', $missing); ?>
+                            </td>
+                        </tr>
+                        <?php endif; ?>
+                        <?php if (!empty($obsolete)): ?>
+                        <tr>
+                            <th>Columnas Obsoletas</th>
+                            <td colspan="2" style="color:#f59e0b;">
+                                <?php echo implode(', ', $obsolete); ?>
+                            </td>
+                        </tr>
+                        <?php endif; ?>
+                    </table>
+                    
+                    <?php
+                    $tracking_exists = $wpdb->get_var("SHOW TABLES LIKE '" . self::$tracking_table_name . "'") === self::$tracking_table_name;
+                    ?>
+                    <table class="widefat" style="margin-top:10px;">
+                        <tr>
+                            <th>Tabla Tracking</th>
+                            <td><?php echo $tracking_exists ? 'Existe' : 'No existe'; ?></td>
+                            <td><?php echo $tracking_exists ? '✅' : '❌'; ?></td>
+                        </tr>
+                    </table>
+                    
+                    <?php if (!empty($missing) || !empty($obsolete) || !$tracking_exists): ?>
+                    <div style="margin-top:20px;">
+                        <form method="post" action="">
+                            <?php wp_nonce_field('woowapp_repair', 'woowapp_repair_nonce'); ?>
+                            <input type="hidden" name="action" value="repair_database">
+                            <button type="submit" class="button button-primary button-large">
+                                🔧 Reparar Base de Datos
+                            </button>
+                        </form>
+                    </div>
+                    <?php endif; ?>
+                    
+                <?php } else { ?>
+                    <p style="color:#ef4444;">❌ La tabla de carritos no existe.</p>
+                    <form method="post" action="">
+                        <?php wp_nonce_field('woowapp_repair', 'woowapp_repair_nonce'); ?>
+                        <input type="hidden" name="action" value="repair_database">
+                        <button type="submit" class="button button-primary">
+                            🔧 Crear Tablas
+                        </button>
+                    </form>
+                <?php } ?>
+            </div>
+            
+            <!-- Sistema de Cron -->
+            <div class="card" style="margin-top:20px;">
+                <h2>⏰ Sistema de Cron</h2>
+                <?php
+                $cron_scheduled = wp_next_scheduled('wse_pro_process_abandoned_carts');
+                ?>
+                <table class="widefat">
+                    <tr>
+                        <th>Estado Cron</th>
+                        <td><?php echo $cron_scheduled ? 'Programado' : 'No programado'; ?></td>
+                        <td><?php echo $cron_scheduled ? '✅' : '❌'; ?></td>
+                    </tr>
+                    <?php if ($cron_scheduled): ?>
+                    <tr>
+                        <th>Próxima Ejecución</th>
+                        <td colspan="2">En <?php echo human_time_diff($cron_scheduled); ?></td>
+                    </tr>
+                    <?php endif; ?>
+                </table>
+                
+                <?php if (!$cron_scheduled): ?>
+                <div style="margin-top:20px;">
+                    <form method="post" action="">
+                        <?php wp_nonce_field('woowapp_repair', 'woowapp_repair_nonce'); ?>
+                        <input type="hidden" name="action" value="repair_cron">
+                        <button type="submit" class="button button-primary">
+                            🔧 Reparar Cron
+                        </button>
+                    </form>
+                </div>
+                <?php endif; ?>
+            </div>
+            
+            <!-- Configuración de Mensajes -->
+            <div class="card" style="margin-top:20px;">
+                <h2>⚙️ Configuración de Mensajes</h2>
+                <?php
+                $cart_enabled = get_option('wse_pro_enable_abandoned_cart', 'no');
+                ?>
+                <table class="widefat">
+                    <tr>
+                        <th>Recuperación de Carrito</th>
+                        <td><?php echo $cart_enabled === 'yes' ? 'Activada' : 'Desactivada'; ?></td>
+                        <td><?php echo $cart_enabled === 'yes' ? '✅' : '❌'; ?></td>
+                    </tr>
+                </table>
+                
+                <h3 style="margin-top:20px;">Mensajes Configurados</h3>
+                <table class="widefat">
+                    <thead>
+                        <tr>
+                            <th>Mensaje</th>
+                            <th>Estado</th>
+                            <th>Delay</th>
+                            <th>Plantilla</th>
+                            <th>Cupón</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php for ($i = 1; $i <= 3; $i++): 
+                            $enabled = get_option("wse_pro_abandoned_cart_enable_msg_{$i}", 'no');
+                            $time = get_option("wse_pro_abandoned_cart_time_{$i}", 60);
+                            $unit = get_option("wse_pro_abandoned_cart_unit_{$i}", 'minutes');
+                            $template = get_option("wse_pro_abandoned_cart_message_{$i}", '');
+                            $coupon = get_option("wse_pro_abandoned_cart_coupon_enable_{$i}", 'no');
+                        ?>
+                        <tr>
+                            <td><strong>Mensaje <?php echo $i; ?></strong></td>
+                            <td><?php echo $enabled === 'yes' ? '✅ Activo' : '❌ Inactivo'; ?></td>
+                            <td><?php echo $time . ' ' . $unit; ?></td>
+                            <td><?php echo !empty($template) ? '✅ Configurada' : '❌ Vacía'; ?></td>
+                            <td><?php echo $coupon === 'yes' ? '🎁 Sí' : '—'; ?></td>
+                        </tr>
+                        <?php endfor; ?>
+                    </tbody>
+                </table>
+                
+                <?php if ($cart_enabled !== 'yes'): ?>
+                <div style="margin-top:20px;">
+                    <form method="post" action="">
+                        <?php wp_nonce_field('woowapp_repair', 'woowapp_repair_nonce'); ?>
+                        <input type="hidden" name="action" value="activate_cart_recovery">
+                        <button type="submit" class="button button-primary">
+                            ✅ Activar Recuperación de Carrito
+                        </button>
+                    </form>
+                </div>
+                <?php endif; ?>
+            </div>
+            
+            <!-- Estadísticas -->
+            <div class="card" style="margin-top:20px;">
+                <h2>📊 Estadísticas Generales</h2>
+                <?php
+                $total_carts = $wpdb->get_var("SELECT COUNT(*) FROM " . self::$abandoned_cart_table_name);
+                $active_carts = $wpdb->get_var("SELECT COUNT(*) FROM " . self::$abandoned_cart_table_name . " WHERE status = 'active'");
+                $recovered = $wpdb->get_var("SELECT COUNT(*) FROM " . self::$abandoned_cart_table_name . " WHERE status = 'recovered'");
+                
+                $tracking_exists = $wpdb->get_var("SHOW TABLES LIKE '" . self::$tracking_table_name . "'") === self::$tracking_table_name;
+                if ($tracking_exists) {
+                    $total_sent = $wpdb->get_var("SELECT COUNT(*) FROM " . self::$tracking_table_name . " WHERE event_type = 'sent'");
+                    $total_clicks = $wpdb->get_var("SELECT COUNT(*) FROM " . self::$tracking_table_name . " WHERE event_type = 'click'");
+                    $total_conversions = $wpdb->get_var("SELECT COUNT(*) FROM " . self::$tracking_table_name . " WHERE event_type = 'conversion'");
+                } else {
+                    $total_sent = $total_clicks = $total_conversions = 0;
+                }
+                ?>
+                <table class="widefat">
+                    <tr>
+                        <th>Total Carritos</th>
+                        <td><?php echo number_format($total_carts); ?></td>
+                    </tr>
+                    <tr>
+                        <th>Carritos Activos</th>
+                        <td><?php echo number_format($active_carts); ?></td>
+                    </tr>
+                    <tr>
+                        <th>Carritos Recuperados</th>
+                        <td><?php echo number_format($recovered); ?></td>
+                    </tr>
+                    <tr>
+                        <th>Mensajes Enviados</th>
+                        <td><?php echo number_format($total_sent); ?></td>
+                    </tr>
+                    <tr>
+                        <th>Clicks en Enlaces</th>
+                        <td><?php echo number_format($total_clicks); ?></td>
+                    </tr>
+                    <tr>
+                        <th>Conversiones</th>
+                        <td><?php echo number_format($total_conversions); ?></td>
+                    </tr>
+                </table>
+                
+                <?php if ($total_sent > 0): ?>
+                <div style="margin-top:20px;">
+                    <a href="<?php echo admin_url('admin.php?page=wse-pro-stats'); ?>" class="button button-primary">
+                        📊 Ver Dashboard Completo
+                    </a>
+                </div>
+                <?php endif; ?>
+            </div>
+            
+            <!-- Enlaces Útiles -->
+            <div class="card" style="margin-top:20px;">
+                <h2>🔗 Enlaces Útiles</h2>
+                <p>
+                    <a href="<?php echo admin_url('admin.php?page=wc-settings&tab=woowapp'); ?>" class="button">⚙️ Configuración</a>
+                    <a href="<?php echo admin_url('admin.php?page=wse-pro-stats'); ?>" class="button">📊 Estadísticas</a>
+                    <a href="<?php echo admin_url('admin.php?page=wc-status&tab=logs'); ?>" class="button">📝 Ver Logs</a>
+                </p>
+            </div>
+        </div>
+        
+        <style>
+            .card {
+                background: white;
+                padding: 20px;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            }
+            .widefat th {
+                width: 250px;
+                font-weight: 600;
+            }
+        </style>
+        <?php
+    }
+    
+    /**
+     * Manejar acciones de diagnóstico
+     */
+    public function handle_diagnostic_actions() {
+        if (!isset($_POST['action']) || !isset($_POST['woowapp_repair_nonce'])) {
+            return;
+        }
+        
+        if (!wp_verify_nonce($_POST['woowapp_repair_nonce'], 'woowapp_repair')) {
+            return;
+        }
+        
+        if (!current_user_can('manage_woocommerce')) {
+            return;
+        }
+        
+        switch ($_POST['action']) {
+            case 'repair_database':
+                $this->verify_and_repair_database();
+                self::create_database_tables();
+                wp_redirect(admin_url('admin.php?page=woowapp-diagnostic&repaired=1'));
+                exit;
+                
+            case 'repair_cron':
+                wp_clear_scheduled_hook('wse_pro_process_abandoned_carts');
+                wp_schedule_event(time(), 'five_minutes', 'wse_pro_process_abandoned_carts');
+                wp_redirect(admin_url('admin.php?page=woowapp-diagnostic&repaired=1'));
+                exit;
+                
+            case 'activate_cart_recovery':
+                update_option('wse_pro_enable_abandoned_cart', 'yes');
+                
+                // Activar mensaje 1 por defecto si no está configurado
+                if (get_option('wse_pro_abandoned_cart_enable_msg_1') !== 'yes') {
+                    update_option('wse_pro_abandoned_cart_enable_msg_1', 'yes');
+                    update_option('wse_pro_abandoned_cart_time_1', '60');
+                    update_option('wse_pro_abandoned_cart_unit_1', 'minutes');
+                    
+                    $default_message = "Hola! Vimos que dejaste productos en tu carrito 🛒\n\n";
+                    $default_message .= "¿Te gustaría completar tu compra?\n\n";
+                    $default_message .= "Recupera tu carrito aquí: {recovery_link}";
+                    
+                    update_option('wse_pro_abandoned_cart_message_1', $default_message);
+                }
+                
+                update_option('wse_pro_enable_log', 'yes');
+                
+                wp_redirect(admin_url('admin.php?page=woowapp-diagnostic&repaired=1'));
+                exit;
+        }
+    }
 
     public function check_review_page_exists() {
         $page_id = get_option('wse_pro_review_page_id');
