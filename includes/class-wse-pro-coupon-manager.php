@@ -5,8 +5,16 @@
  * Maneja la creación, tracking y limpieza de cupones de descuento
  * para recuperación de carritos y recompensas por reseñas.
  *
+ * VERSIÓN: 2.2.1
+ * CHANGELOG:
+ * - Agregado método get_latest_coupon_for_cart() (crítico)
+ * - Soporte para prefijos personalizables
+ * - Validaciones mejoradas
+ * - Logging robusto
+ * - Métodos auxiliares para estadísticas
+ *
  * @package WooWApp
- * @version 1.1
+ * @version 2.2.1
  */
 
 if (!defined('ABSPATH')) {
@@ -22,11 +30,29 @@ class WSE_Pro_Coupon_Manager {
     private static $table_name;
 
     /**
+     * Instancia singleton
+     * @var WSE_Pro_Coupon_Manager
+     */
+    private static $instance = null;
+
+    /**
      * Constructor
      */
     public function __construct() {
         global $wpdb;
         self::$table_name = $wpdb->prefix . 'wse_pro_coupons_generated';
+    }
+
+    /**
+     * Obtiene la instancia singleton
+     * 
+     * @return WSE_Pro_Coupon_Manager
+     */
+    public static function get_instance() {
+        if (null === self::$instance) {
+            self::$instance = new self();
+        }
+        return self::$instance;
     }
 
     /**
@@ -55,7 +81,11 @@ class WSE_Pro_Coupon_Manager {
             PRIMARY KEY (id),
             UNIQUE KEY coupon_code (coupon_code),
             KEY customer_phone (customer_phone),
-            KEY cart_id (cart_id)
+            KEY customer_email (customer_email),
+            KEY cart_id (cart_id),
+            KEY order_id (order_id),
+            KEY used (used),
+            KEY expires_at (expires_at)
         ) $charset_collate;";
 
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
@@ -70,7 +100,7 @@ class WSE_Pro_Coupon_Manager {
      */
     public function generate_coupon($args = []) {
         $defaults = [
-            'discount_type'   => 'percent',     // 'percent' o 'fixed_cart'
+            'discount_type'   => 'percent',        // 'percent', 'fixed_cart', 'fixed_product'
             'discount_amount' => 10,
             'expiry_days'     => 7,
             'usage_limit'     => 1,
@@ -79,15 +109,26 @@ class WSE_Pro_Coupon_Manager {
             'cart_id'         => 0,
             'order_id'        => 0,
             'message_number'  => 0,
-            'coupon_type'     => 'cart_recovery', // 'cart_recovery' o 'review_reward'
-            'prefix'          => 'WOOWAPP'
+            'coupon_type'     => 'cart_recovery',  // 'cart_recovery' o 'review_reward'
+            'prefix'          => 'WOOWAPP'         // Prefijo personalizable
         ];
 
         $args = wp_parse_args($args, $defaults);
 
         // Validar tipo de descuento
         if (!in_array($args['discount_type'], ['percent', 'fixed_cart', 'fixed_product'])) {
-            return new WP_Error('invalid_discount_type', __('Tipo de descuento no válido', 'woowapp-smsenlinea-pro'));
+            return new WP_Error(
+                'invalid_discount_type',
+                __('Tipo de descuento no válido', 'woowapp-smsenlinea-pro')
+            );
+        }
+
+        // Validar cantidad de descuento
+        if ($args['discount_amount'] <= 0) {
+            return new WP_Error(
+                'invalid_discount_amount',
+                __('La cantidad de descuento debe ser mayor a 0', 'woowapp-smsenlinea-pro')
+            );
         }
 
         // Generar código único
@@ -128,24 +169,30 @@ class WSE_Pro_Coupon_Manager {
         if (!$inserted) {
             // Si falla el tracking, eliminar el cupón de WooCommerce
             wp_delete_post($coupon_id, true);
-            return new WP_Error('db_error', __('Error al registrar el cupón', 'woowapp-smsenlinea-pro'));
-        }
-
-        // Log si está habilitado
-        if (get_option('wse_pro_enable_log') === 'yes') {
-            wc_get_logger()->info(
-                "Cupón generado: {$coupon_code} para carrito #{$args['cart_id']}",
-                ['source' => 'woowapp-' . date('Y-m-d')]
+            
+            $this->log_error(
+                'Error al registrar cupón en BD',
+                ['coupon_code' => $coupon_code, 'db_error' => $wpdb->last_error]
+            );
+            
+            return new WP_Error(
+                'db_error',
+                __('Error al registrar el cupón', 'woowapp-smsenlinea-pro')
             );
         }
 
+        // Log de éxito
+        $this->log_info(
+            "Cupón generado: {$coupon_code} para carrito #{$args['cart_id']}, mensaje #{$args['message_number']}"
+        );
+
         return [
-            'success'         => true,
-            'coupon_code'     => $coupon_code,
-            'coupon_id'       => $coupon_id,
-            'discount_amount' => $args['discount_amount'],
-            'discount_type'   => $args['discount_type'],
-            'expires_at'      => $expires_at,
+            'success'            => true,
+            'coupon_code'        => $coupon_code,
+            'coupon_id'          => $coupon_id,
+            'discount_amount'    => $args['discount_amount'],
+            'discount_type'      => $args['discount_type'],
+            'expires_at'         => $expires_at,
             'formatted_discount' => $this->format_discount($args['discount_amount'], $args['discount_type']),
             'formatted_expiry'   => date_i18n(get_option('date_format'), strtotime($expires_at))
         ];
@@ -153,24 +200,38 @@ class WSE_Pro_Coupon_Manager {
 
     /**
      * Genera un código único para el cupón
+     * ACTUALIZADO: Ahora usa el prefijo configurado por el usuario
      *
-     * @param string $prefix Prefijo del cupón
+     * @param string $prefix Prefijo personalizado del cupón
      * @param int $message_number Número de mensaje (para diferenciación)
      * @return string Código único
      */
     private function generate_unique_code($prefix, $message_number = 0) {
+        // Limpiar el prefijo (solo letras, números y guiones)
+        $prefix = sanitize_title($prefix);
+        
+        // Si está vacío, usar default
+        if (empty($prefix)) {
+            $prefix = 'woowapp-m' . $message_number;
+        }
+        
+        // Generar sufijo único (6 caracteres)
         $suffix = strtoupper(substr(md5(uniqid(rand(), true)), 0, 6));
         
-        $msg_suffix = '';
-        if ($message_number > 0) {
-            $msg_suffix = 'M' . $message_number . '-';
-        }
-
-        $code = $prefix . '-' . $msg_suffix . $suffix;
+        // Formato: PREFIX-SUFFIX (ej: DESCUENTO5-A1B2C3)
+        $code = $prefix . '-' . $suffix;
 
         // Verificar que no exista (aunque es altamente improbable)
-        if (get_page_by_title($code, OBJECT, 'shop_coupon')) {
-            return $this->generate_unique_code($prefix, $message_number); // Recursivo
+        $attempts = 0;
+        while (get_page_by_title($code, OBJECT, 'shop_coupon') && $attempts < 5) {
+            $suffix = strtoupper(substr(md5(uniqid(rand(), true)), 0, 6));
+            $code = $prefix . '-' . $suffix;
+            $attempts++;
+        }
+        
+        // Si después de 5 intentos sigue existiendo, agregar timestamp
+        if ($attempts >= 5) {
+            $code = $prefix . '-' . time() . '-' . substr($suffix, 0, 3);
         }
 
         return $code;
@@ -185,68 +246,224 @@ class WSE_Pro_Coupon_Manager {
      * @return int|WP_Error ID del cupón o error
      */
     private function create_woocommerce_coupon($coupon_code, $args, $expires_at) {
-        $coupon = new WC_Coupon();
-        
-        $coupon->set_code($coupon_code);
-        $coupon->set_discount_type($args['discount_type']);
-        $coupon->set_amount($args['discount_amount']);
-        $coupon->set_date_expires(strtotime($expires_at));
-        $coupon->set_usage_limit($args['usage_limit']);
-        $coupon->set_usage_limit_per_user($args['usage_limit']);
-        $coupon->set_individual_use(true);
-        $coupon->set_description(
-            sprintf(
-                __('Cupón automático generado por WooWApp - %s', 'woowapp-smsenlinea-pro'),
-                $args['coupon_type']
-            )
-        );
-
-        // Si hay email, restringir a ese email
-        if (!empty($args['customer_email'])) {
-            $coupon->set_email_restrictions([$args['customer_email']]);
-        }
-
         try {
+            $coupon = new WC_Coupon();
+            
+            $coupon->set_code($coupon_code);
+            $coupon->set_discount_type($args['discount_type']);
+            $coupon->set_amount($args['discount_amount']);
+            $coupon->set_date_expires(strtotime($expires_at));
+            $coupon->set_usage_limit($args['usage_limit']);
+            $coupon->set_usage_limit_per_user($args['usage_limit']);
+            $coupon->set_individual_use(true);
+            
+            $coupon->set_description(
+                sprintf(
+                    __('Cupón automático generado por WooWApp - %s (Mensaje #%d)', 'woowapp-smsenlinea-pro'),
+                    $args['coupon_type'],
+                    $args['message_number']
+                )
+            );
+
+            // Si hay email, restringir a ese email
+            if (!empty($args['customer_email'])) {
+                $coupon->set_email_restrictions([$args['customer_email']]);
+            }
+            
+            // Configuraciones adicionales de seguridad
+            $coupon->set_free_shipping(false);
+            $coupon->set_exclude_sale_items(false);
+            $coupon->set_minimum_amount(0);
+            $coupon->set_maximum_amount(0);
+
             $coupon_id = $coupon->save();
+            
+            if (!$coupon_id) {
+                throw new Exception(__('No se pudo guardar el cupón', 'woowapp-smsenlinea-pro'));
+            }
+            
             return $coupon_id;
+            
         } catch (Exception $e) {
+            $this->log_error(
+                'Error al crear cupón en WooCommerce',
+                ['coupon_code' => $coupon_code, 'error' => $e->getMessage()]
+            );
+            
             return new WP_Error('coupon_creation_failed', $e->getMessage());
         }
+    }
+
+    /**
+     * ========================================
+     * MÉTODO CRÍTICO - ERA EL QUE FALTABA
+     * ========================================
+     * 
+     * Obtiene el último cupón generado para un carrito específico
+     * Este método es llamado por handle_cart_recovery_link() en woowapp.php
+     *
+     * @param int $cart_id ID del carrito abandonado
+     * @return object|null Objeto con información del cupón o null si no existe
+     */
+    public function get_latest_coupon_for_cart($cart_id) {
+        global $wpdb;
+        
+        // Validar que el cart_id sea válido
+        if (empty($cart_id) || $cart_id <= 0) {
+            $this->log_error(
+                'get_latest_coupon_for_cart: cart_id inválido',
+                ['cart_id' => $cart_id]
+            );
+            return null;
+        }
+        
+        // Verificar que la tabla existe
+        if ($wpdb->get_var("SHOW TABLES LIKE '" . self::$table_name . "'") !== self::$table_name) {
+            $this->log_error(
+                'Tabla de cupones no existe',
+                ['table' => self::$table_name]
+            );
+            return null;
+        }
+        
+        // Buscar el último cupón válido para este carrito
+        $coupon = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM " . self::$table_name . " 
+             WHERE cart_id = %d 
+             AND used = 0 
+             AND expires_at > NOW() 
+             ORDER BY created_at DESC 
+             LIMIT 1",
+            $cart_id
+        ));
+        
+        if ($coupon) {
+            $this->log_info(
+                "Cupón encontrado para carrito #{$cart_id}: {$coupon->coupon_code}"
+            );
+            
+            // Verificar que el cupón realmente exista en WooCommerce
+            $wc_coupon_id = wc_get_coupon_id_by_code($coupon->coupon_code);
+            if (!$wc_coupon_id) {
+                $this->log_error(
+                    "Cupón existe en BD pero no en WooCommerce",
+                    ['coupon_code' => $coupon->coupon_code, 'cart_id' => $cart_id]
+                );
+                return null;
+            }
+            
+            return $coupon;
+        }
+        
+        $this->log_info(
+            "No se encontró cupón válido para carrito #{$cart_id}"
+        );
+        
+        return null;
+    }
+
+    /**
+     * Obtiene todos los cupones activos de un carrito
+     *
+     * @param int $cart_id ID del carrito
+     * @return array Array de objetos con cupones
+     */
+    public function get_all_coupons_for_cart($cart_id) {
+        global $wpdb;
+        
+        if (empty($cart_id) || $cart_id <= 0) {
+            return [];
+        }
+        
+        $coupons = $wpdb->get_results($wpdb->prepare(
+            "SELECT * FROM " . self::$table_name . " 
+             WHERE cart_id = %d 
+             AND used = 0 
+             AND expires_at > NOW() 
+             ORDER BY created_at DESC",
+            $cart_id
+        ));
+        
+        return $coupons ? $coupons : [];
     }
 
     /**
      * Marca un cupón como usado
      *
      * @param string $coupon_code Código del cupón
-     * @return bool Éxito de la operación
+     * @param int $order_id ID del pedido donde se usó (opcional)
+     * @return bool True si se actualizó correctamente
      */
-    public function mark_as_used($coupon_code) {
+    public function mark_as_used($coupon_code, $order_id = 0) {
         global $wpdb;
+        
+        $update_data = ['used' => 1];
+        $format = ['%d'];
+        
+        // Si se proporciona order_id, también lo actualizamos
+        if ($order_id > 0) {
+            $update_data['order_id'] = $order_id;
+            $format[] = '%d';
+        }
         
         $result = $wpdb->update(
             self::$table_name,
-            ['used' => 1],
+            $update_data,
             ['coupon_code' => $coupon_code],
-            ['%d'],
+            $format,
             ['%s']
         );
 
-        // Log si está habilitado
-        if ($result && get_option('wse_pro_enable_log') === 'yes') {
-            wc_get_logger()->info(
-                "Cupón marcado como usado: {$coupon_code}",
-                ['source' => 'woowapp-' . date('Y-m-d')]
+        if ($result) {
+            $this->log_info(
+                "Cupón marcado como usado: {$coupon_code}" . 
+                ($order_id > 0 ? " en pedido #{$order_id}" : "")
             );
         }
 
-        return $result;
+        return ($result !== false);
     }
 
     /**
-     * Verifica si un cliente ya tiene un cupón activo para un carrito
+     * Alias del método mark_as_used para compatibilidad
+     *
+     * @param string $coupon_code Código del cupón
+     * @param int $order_id ID del pedido donde se usó
+     * @return bool True si se actualizó correctamente
+     */
+    public function mark_coupon_as_used($coupon_code, $order_id = 0) {
+        return $this->mark_as_used($coupon_code, $order_id);
+    }
+
+    /**
+     * Verifica si un cupón existe y es válido
+     *
+     * @param string $coupon_code Código del cupón
+     * @return bool True si el cupón es válido
+     */
+    public function is_coupon_valid($coupon_code) {
+        global $wpdb;
+        
+        if (empty($coupon_code)) {
+            return false;
+        }
+        
+        $coupon = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM " . self::$table_name . " 
+             WHERE coupon_code = %s 
+             AND used = 0 
+             AND expires_at > NOW()",
+            $coupon_code
+        ));
+        
+        return ($coupon !== null);
+    }
+
+    /**
+     * Verifica si un cliente ya tiene un cupón activo
      *
      * @param string $phone Teléfono del cliente
-     * @param int $cart_id ID del carrito
+     * @param int $cart_id ID del carrito (opcional)
      * @return bool True si ya existe
      */
     public function customer_has_active_coupon($phone, $cart_id = 0) {
@@ -300,151 +517,6 @@ class WSE_Pro_Coupon_Manager {
     }
 
     /**
-     * ========================================
-     * MÉTODOS NUEVOS AGREGADOS
-     * ========================================
-     */
-
-    /**
-     * Obtiene el último cupón generado para un carrito específico
-     * ESTE ES EL MÉTODO QUE FALTABA Y CAUSABA EL ERROR
-     *
-     * @param int $cart_id ID del carrito abandonado
-     * @return object|null Objeto con información del cupón o null si no existe
-     */
-    public function get_latest_coupon_for_cart($cart_id) {
-        global $wpdb;
-        
-        // Verificar que el cart_id sea válido
-        if (empty($cart_id) || $cart_id <= 0) {
-            return null;
-        }
-        
-        // Verificar que la tabla existe
-        if ($wpdb->get_var("SHOW TABLES LIKE '" . self::$table_name . "'") !== self::$table_name) {
-            if (get_option('wse_pro_enable_log') === 'yes') {
-                wc_get_logger()->error(
-                    'Tabla de cupones no existe',
-                    ['source' => 'woowapp-' . date('Y-m-d')]
-                );
-            }
-            return null;
-        }
-        
-        // Buscar el último cupón válido para este carrito
-        $coupon = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM " . self::$table_name . " 
-             WHERE cart_id = %d 
-             AND used = 0 
-             AND expires_at > NOW() 
-             ORDER BY created_at DESC 
-             LIMIT 1",
-            $cart_id
-        ));
-        
-        if ($coupon) {
-            // Log si está habilitado
-            if (get_option('wse_pro_enable_log') === 'yes') {
-                wc_get_logger()->info(
-                    "Cupón encontrado para carrito #{$cart_id}: {$coupon->coupon_code}",
-                    ['source' => 'woowapp-' . date('Y-m-d')]
-                );
-            }
-            
-            return $coupon;
-        }
-        
-        return null;
-    }
-
-    /**
-     * Verifica si un cupón existe y es válido
-     *
-     * @param string $coupon_code Código del cupón
-     * @return bool True si el cupón es válido
-     */
-    public function is_coupon_valid($coupon_code) {
-        global $wpdb;
-        
-        if (empty($coupon_code)) {
-            return false;
-        }
-        
-        $coupon = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM " . self::$table_name . " 
-             WHERE coupon_code = %s 
-             AND used = 0 
-             AND expires_at > NOW()",
-            $coupon_code
-        ));
-        
-        return ($coupon !== null);
-    }
-
-    /**
-     * Marca un cupón como usado (alias del método mark_as_used)
-     * Se agregó para compatibilidad con diferentes partes del código
-     *
-     * @param string $coupon_code Código del cupón
-     * @param int $order_id ID del pedido donde se usó
-     * @return bool True si se actualizó correctamente
-     */
-    public function mark_coupon_as_used($coupon_code, $order_id = 0) {
-        global $wpdb;
-        
-        $update_data = ['used' => 1];
-        $format = ['%d'];
-        
-        // Si se proporciona order_id, también lo actualizamos
-        if ($order_id > 0) {
-            $update_data['order_id'] = $order_id;
-            $format[] = '%d';
-        }
-        
-        $result = $wpdb->update(
-            self::$table_name,
-            $update_data,
-            ['coupon_code' => $coupon_code],
-            $format,
-            ['%s']
-        );
-        
-        if ($result && get_option('wse_pro_enable_log') === 'yes') {
-            wc_get_logger()->info(
-                "Cupón marcado como usado: {$coupon_code}" . ($order_id > 0 ? " en pedido #{$order_id}" : ""),
-                ['source' => 'woowapp-' . date('Y-m-d')]
-            );
-        }
-        
-        return ($result !== false);
-    }
-
-    /**
-     * Obtiene todos los cupones activos de un carrito
-     *
-     * @param int $cart_id ID del carrito
-     * @return array Array de objetos con cupones
-     */
-    public function get_all_coupons_for_cart($cart_id) {
-        global $wpdb;
-        
-        if (empty($cart_id) || $cart_id <= 0) {
-            return [];
-        }
-        
-        $coupons = $wpdb->get_results($wpdb->prepare(
-            "SELECT * FROM " . self::$table_name . " 
-             WHERE cart_id = %d 
-             AND used = 0 
-             AND expires_at > NOW() 
-             ORDER BY created_at DESC",
-            $cart_id
-        ));
-        
-        return $coupons ? $coupons : [];
-    }
-
-    /**
      * Obtiene estadísticas de uso de cupones para un carrito
      *
      * @param int $cart_id ID del carrito
@@ -455,9 +527,9 @@ class WSE_Pro_Coupon_Manager {
         
         $stats = [
             'total_generated' => 0,
-            'total_used' => 0,
-            'total_active' => 0,
-            'total_expired' => 0
+            'total_used'      => 0,
+            'total_active'    => 0,
+            'total_expired'   => 0
         ];
         
         if (empty($cart_id) || $cart_id <= 0) {
@@ -475,12 +547,14 @@ class WSE_Pro_Coupon_Manager {
         ));
         
         $stats['total_active'] = (int) $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM " . self::$table_name . " WHERE cart_id = %d AND used = 0 AND expires_at > NOW()",
+            "SELECT COUNT(*) FROM " . self::$table_name . " 
+             WHERE cart_id = %d AND used = 0 AND expires_at > NOW()",
             $cart_id
         ));
         
         $stats['total_expired'] = (int) $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM " . self::$table_name . " WHERE cart_id = %d AND used = 0 AND expires_at < NOW()",
+            "SELECT COUNT(*) FROM " . self::$table_name . " 
+             WHERE cart_id = %d AND used = 0 AND expires_at < NOW()",
             $cart_id
         ));
         
@@ -488,21 +562,18 @@ class WSE_Pro_Coupon_Manager {
     }
 
     /**
-     * ========================================
-     * FIN DE MÉTODOS NUEVOS
-     * ========================================
-     */
-
-    /**
-     * Limpia cupones expirados (cron job)
+     * Limpia cupones expirados (ejecutado por cron job)
+     * Solo elimina cupones que expiraron hace más de 7 días
+     * 
+     * @return int Número de cupones eliminados
      */
     public static function cleanup_expired_coupons() {
         global $wpdb;
         $table_name = $wpdb->prefix . 'wse_pro_coupons_generated';
 
         // Obtener cupones expirados hace más de 7 días
-        $expired_coupons = $wpdb->get_col(
-            "SELECT coupon_code FROM $table_name 
+        $expired_coupons = $wpdb->get_results(
+            "SELECT * FROM $table_name 
             WHERE expires_at < DATE_SUB(NOW(), INTERVAL 7 DAY) 
             AND used = 0"
         );
@@ -512,15 +583,20 @@ class WSE_Pro_Coupon_Manager {
         }
 
         $deleted_count = 0;
-        foreach ($expired_coupons as $coupon_code) {
+        foreach ($expired_coupons as $coupon_data) {
             // Eliminar de WooCommerce
-            $coupon_id = wc_get_coupon_id_by_code($coupon_code);
+            $coupon_id = wc_get_coupon_id_by_code($coupon_data->coupon_code);
             if ($coupon_id) {
                 wp_delete_post($coupon_id, true);
             }
 
             // Eliminar de la tabla de tracking
-            $result = $wpdb->delete($table_name, ['coupon_code' => $coupon_code], ['%s']);
+            $result = $wpdb->delete(
+                $table_name,
+                ['coupon_code' => $coupon_data->coupon_code],
+                ['%s']
+            );
+            
             if ($result) {
                 $deleted_count++;
             }
@@ -538,38 +614,34 @@ class WSE_Pro_Coupon_Manager {
     }
 
     /**
-     * Formatea el descuento para mostrar
-     *
-     * @param float $amount Cantidad
-     * @param string $type Tipo de descuento
-     * @return string Descuento formateado
-     */
-    private function format_discount($amount, $type) {
-        if ($type === 'percent') {
-            return $amount . '%';
-        } else {
-            return wc_price($amount);
-        }
-    }
-
-    /**
      * Hook para marcar cupones como usados cuando se aplican a un pedido
+     * 
+     * @param int $order_id ID del pedido
      */
     public static function track_coupon_usage($order_id) {
         $order = wc_get_order($order_id);
-        if (!$order) return;
+        if (!$order) {
+            return;
+        }
 
         $used_coupons = $order->get_coupon_codes();
         
-        if (empty($used_coupons)) return;
+        if (empty($used_coupons)) {
+            return;
+        }
 
-        $manager = new self();
+        $manager = self::get_instance();
+        
         foreach ($used_coupons as $coupon_code) {
-            // Marcar cupones generados por nuestro sistema (WOOWAPP, CART, REVIEW)
-            if (strpos($coupon_code, 'WOOWAPP') !== false || 
-                strpos($coupon_code, 'CART') === 0 || 
-                strpos($coupon_code, 'REVIEW') === 0) {
-                $manager->mark_coupon_as_used($coupon_code, $order_id);
+            // Verificar si es un cupón generado por WooWApp
+            global $wpdb;
+            $is_our_coupon = $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM " . self::$table_name . " WHERE coupon_code = %s",
+                $coupon_code
+            ));
+            
+            if ($is_our_coupon > 0) {
+                $manager->mark_as_used($coupon_code, $order_id);
             }
         }
     }
@@ -577,21 +649,40 @@ class WSE_Pro_Coupon_Manager {
     /**
      * Obtiene estadísticas generales de cupones
      *
-     * @return array Estadísticas
+     * @return array Estadísticas globales
      */
     public function get_stats() {
         global $wpdb;
         
         $stats = [
-            'total_generated' => (int) $wpdb->get_var("SELECT COUNT(*) FROM " . self::$table_name),
-            'total_used'      => (int) $wpdb->get_var("SELECT COUNT(*) FROM " . self::$table_name . " WHERE used = 1"),
-            'total_active'    => (int) $wpdb->get_var("SELECT COUNT(*) FROM " . self::$table_name . " WHERE used = 0 AND expires_at > NOW()"),
-            'total_expired'   => (int) $wpdb->get_var("SELECT COUNT(*) FROM " . self::$table_name . " WHERE used = 0 AND expires_at < NOW()"),
+            'total_generated' => (int) $wpdb->get_var(
+                "SELECT COUNT(*) FROM " . self::$table_name
+            ),
+            'total_used' => (int) $wpdb->get_var(
+                "SELECT COUNT(*) FROM " . self::$table_name . " WHERE used = 1"
+            ),
+            'total_active' => (int) $wpdb->get_var(
+                "SELECT COUNT(*) FROM " . self::$table_name . " 
+                 WHERE used = 0 AND expires_at > NOW()"
+            ),
+            'total_expired' => (int) $wpdb->get_var(
+                "SELECT COUNT(*) FROM " . self::$table_name . " 
+                 WHERE used = 0 AND expires_at < NOW()"
+            ),
         ];
 
+        // Calcular tasa de conversión
         $stats['conversion_rate'] = $stats['total_generated'] > 0 
             ? round(($stats['total_used'] / $stats['total_generated']) * 100, 2)
             : 0;
+
+        // Total por tipo de cupón
+        $stats['by_type'] = $wpdb->get_results(
+            "SELECT coupon_type, COUNT(*) as count, SUM(used) as used_count 
+             FROM " . self::$table_name . " 
+             GROUP BY coupon_type",
+            ARRAY_A
+        );
 
         return $stats;
     }
@@ -599,14 +690,15 @@ class WSE_Pro_Coupon_Manager {
     /**
      * Obtiene el total de descuento otorgado por cupones usados
      *
-     * @return float Total de descuento
+     * @return float Total de descuento en moneda del sitio
      */
     public function get_total_discount_given() {
         global $wpdb;
         
+        // Solo contar descuentos fijos (no porcentajes)
         $total = $wpdb->get_var(
             "SELECT SUM(discount_amount) FROM " . self::$table_name . " 
-             WHERE used = 1 AND discount_type != 'percent'"
+             WHERE used = 1 AND discount_type = 'fixed_cart'"
         );
         
         return $total ? (float) $total : 0;
@@ -635,5 +727,153 @@ class WSE_Pro_Coupon_Manager {
              ORDER BY created_at DESC",
             $params
         ));
+    }
+
+    /**
+     * Formatea el descuento para mostrar
+     *
+     * @param float $amount Cantidad
+     * @param string $type Tipo de descuento
+     * @return string Descuento formateado
+     */
+    private function format_discount($amount, $type) {
+        if ($type === 'percent') {
+            return $amount . '%';
+        } else {
+            return wc_price($amount);
+        }
+    }
+
+    /**
+     * ========================================
+     * MÉTODOS DE LOGGING
+     * ========================================
+     */
+
+    /**
+     * Registra un mensaje informativo
+     * 
+     * @param string $message Mensaje a registrar
+     * @param array $context Contexto adicional
+     */
+    private function log_info($message, $context = []) {
+        if (get_option('wse_pro_enable_log') === 'yes' && function_exists('wc_get_logger')) {
+            $logger = wc_get_logger();
+            $logger->info(
+                $message,
+                array_merge(['source' => 'woowapp-' . date('Y-m-d')], $context)
+            );
+        }
+    }
+
+    /**
+     * Registra un error
+     * 
+     * @param string $message Mensaje de error
+     * @param array $context Contexto adicional
+     */
+    private function log_error($message, $context = []) {
+        if (get_option('wse_pro_enable_log') === 'yes' && function_exists('wc_get_logger')) {
+            $logger = wc_get_logger();
+            $logger->error(
+                $message,
+                array_merge(['source' => 'woowapp-' . date('Y-m-d')], $context)
+            );
+        }
+    }
+
+    /**
+     * ========================================
+     * MÉTODOS DE UTILIDAD
+     * ========================================
+     */
+
+    /**
+     * Obtiene información detallada de un cupón por su código
+     * 
+     * @param string $coupon_code Código del cupón
+     * @return array|null Información del cupón o null
+     */
+    public function get_coupon_info($coupon_code) {
+        global $wpdb;
+        
+        if (empty($coupon_code)) {
+            return null;
+        }
+        
+        $coupon_data = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM " . self::$table_name . " WHERE coupon_code = %s",
+            $coupon_code
+        ), ARRAY_A);
+        
+        if (!$coupon_data) {
+            return null;
+        }
+        
+        // Agregar información adicional
+        $coupon_data['is_valid'] = $this->is_coupon_valid($coupon_code);
+        $coupon_data['is_expired'] = (strtotime($coupon_data['expires_at']) < time());
+        $coupon_data['formatted_discount'] = $this->format_discount(
+            $coupon_data['discount_amount'],
+            $coupon_data['discount_type']
+        );
+        $coupon_data['formatted_expiry'] = date_i18n(
+            get_option('date_format'),
+            strtotime($coupon_data['expires_at'])
+        );
+        
+        return $coupon_data;
+    }
+
+    /**
+     * Verifica la salud de la tabla de cupones
+     * Útil para diagnóstico
+     * 
+     * @return array Estado de la tabla
+     */
+    public function check_table_health() {
+        global $wpdb;
+        
+        $health = [
+            'table_exists' => false,
+            'total_records' => 0,
+            'indexes_ok' => false,
+            'issues' => []
+        ];
+        
+        // Verificar existencia de tabla
+        $table_exists = $wpdb->get_var(
+            "SHOW TABLES LIKE '" . self::$table_name . "'"
+        ) === self::$table_name;
+        
+        $health['table_exists'] = $table_exists;
+        
+        if (!$table_exists) {
+            $health['issues'][] = 'Tabla no existe';
+            return $health;
+        }
+        
+        // Contar registros
+        $health['total_records'] = (int) $wpdb->get_var(
+            "SELECT COUNT(*) FROM " . self::$table_name
+        );
+        
+        // Verificar índices
+        $indexes = $wpdb->get_results(
+            "SHOW INDEX FROM " . self::$table_name,
+            ARRAY_A
+        );
+        
+        $required_indexes = ['PRIMARY', 'coupon_code', 'cart_id'];
+        $existing_indexes = array_column($indexes, 'Key_name');
+        
+        $health['indexes_ok'] = empty(array_diff($required_indexes, $existing_indexes));
+        
+        if (!$health['indexes_ok']) {
+            $missing = array_diff($required_indexes, $existing_indexes);
+            $health['issues'][] = 'Índices faltantes: ' . implode(', ', $missing);
+        }
+        
+        return $health;
     }
 }
