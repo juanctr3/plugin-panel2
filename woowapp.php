@@ -499,38 +499,233 @@ final class WooWApp {
         return false;
     }
 
-    public function handle_cart_recovery_link() {
-        if (!isset($_GET['recover-cart-wse'])) return;
+   public function handle_cart_recovery_link() {
+    // Verificar parámetro de recuperación
+    if (!isset($_GET['recover-cart-wse'])) {
+        return;
+    }
 
+    // Verificar que WooCommerce esté disponible
+    if (!function_exists('WC') || !WC()->cart) {
+        wp_die(__('Error: WooCommerce no está disponible. Por favor, contacta al administrador.', 'woowapp-smsenlinea-pro'));
+        return;
+    }
+
+    try {
         global $wpdb;
         $token = sanitize_text_field($_GET['recover-cart-wse']);
-        $cart_row = $wpdb->get_row($wpdb->prepare("SELECT * FROM " . self::$abandoned_cart_table_name . " WHERE recovery_token = %s", $token));
         
-        if ($cart_row) {
-            WC()->cart->empty_cart();
-            $cart_contents = maybe_unserialize($cart_row->cart_contents);
-            if (is_array($cart_contents)) {
-                foreach ($cart_contents as $item_key => $item) {
-                    WC()->cart->add_to_cart($item['product_id'], $item['quantity'], $item['variation_id'] ?? 0, $item['variation'] ?? []);
-                }
-            }
+        // Log del intento
+        if (get_option('wse_pro_enable_log') === 'yes') {
+            wc_get_logger()->info(
+                "Intento de recuperación de carrito - Token: {$token}",
+                ['source' => 'woowapp-' . date('Y-m-d')]
+            );
+        }
 
-            $coupon_manager = new WSE_Pro_Coupon_Manager();
-            $coupon = $coupon_manager->get_latest_coupon_for_cart($cart_row->id);
-            if($coupon && !WC()->cart->has_discount($coupon->coupon_code)){
-                WC()->cart->apply_coupon($coupon->coupon_code);
-            }
+        // Buscar el carrito
+        $cart_row = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM " . self::$abandoned_cart_table_name . " WHERE recovery_token = %s",
+            $token
+        ));
 
-            if (!empty($cart_row->checkout_data)) {
-                parse_str($cart_row->checkout_data, $checkout_fields);
-                WC()->session->set('wse_pro_recovered_checkout_data', $checkout_fields);
+        // Si no existe el carrito
+        if (!$cart_row) {
+            if (get_option('wse_pro_enable_log') === 'yes') {
+                wc_get_logger()->warning(
+                    "Token de recuperación no válido: {$token}",
+                    ['source' => 'woowapp-' . date('Y-m-d')]
+                );
             }
             
-            $wpdb->update(self::$abandoned_cart_table_name, ['status' => 'recovered'], ['id' => $cart_row->id]);
-            wp_safe_redirect(wc_get_checkout_url());
+            wc_add_notice(
+                __('El enlace de recuperación no es válido o ha expirado.', 'woowapp-smsenlinea-pro'),
+                'error'
+            );
+            wp_safe_redirect(wc_get_cart_url());
             exit();
         }
+
+        // Si ya fue recuperado, redirigir al carrito
+        if ($cart_row->status === 'recovered') {
+            if (get_option('wse_pro_enable_log') === 'yes') {
+                wc_get_logger()->info(
+                    "Carrito ya recuperado previamente - ID: {$cart_row->id}",
+                    ['source' => 'woowapp-' . date('Y-m-d')]
+                );
+            }
+            
+            wc_add_notice(
+                __('Este carrito ya fue recuperado anteriormente.', 'woowapp-smsenlinea-pro'),
+                'notice'
+            );
+            wp_safe_redirect(wc_get_cart_url());
+            exit();
+        }
+
+        // Vaciar carrito actual
+        WC()->cart->empty_cart();
+
+        // Deserializar contenido del carrito
+        $cart_contents = maybe_unserialize($cart_row->cart_contents);
+        
+        if (!is_array($cart_contents) || empty($cart_contents)) {
+            if (get_option('wse_pro_enable_log') === 'yes') {
+                wc_get_logger()->error(
+                    "Carrito vacío o no válido - ID: {$cart_row->id}",
+                    ['source' => 'woowapp-' . date('Y-m-d')]
+                );
+            }
+            
+            wc_add_notice(
+                __('El carrito está vacío o no se pudo recuperar.', 'woowapp-smsenlinea-pro'),
+                'error'
+            );
+            wp_safe_redirect(wc_get_cart_url());
+            exit();
+        }
+
+        // Restaurar productos
+        $products_restored = 0;
+        $products_failed = 0;
+
+        foreach ($cart_contents as $item_key => $item) {
+            // Validar que existan los datos mínimos
+            if (!isset($item['product_id']) || !isset($item['quantity'])) {
+                $products_failed++;
+                continue;
+            }
+
+            $product_id = absint($item['product_id']);
+            $quantity = absint($item['quantity']);
+            $variation_id = isset($item['variation_id']) ? absint($item['variation_id']) : 0;
+            $variation = isset($item['variation']) ? $item['variation'] : [];
+
+            // Verificar que el producto existe y está disponible
+            $product = wc_get_product($variation_id > 0 ? $variation_id : $product_id);
+            
+            if (!$product || !$product->is_purchasable() || !$product->is_in_stock()) {
+                $products_failed++;
+                
+                if (get_option('wse_pro_enable_log') === 'yes') {
+                    wc_get_logger()->warning(
+                        "Producto no disponible - ID: {$product_id}, Var: {$variation_id}",
+                        ['source' => 'woowapp-' . date('Y-m-d')]
+                    );
+                }
+                continue;
+            }
+
+            // Intentar agregar al carrito
+            $added = WC()->cart->add_to_cart(
+                $product_id,
+                $quantity,
+                $variation_id,
+                $variation
+            );
+
+            if ($added) {
+                $products_restored++;
+            } else {
+                $products_failed++;
+            }
+        }
+
+        // Log de resultados
+        if (get_option('wse_pro_enable_log') === 'yes') {
+            wc_get_logger()->info(
+                "Recuperación completada - ID: {$cart_row->id}, Restaurados: {$products_restored}, Fallidos: {$products_failed}",
+                ['source' => 'woowapp-' . date('Y-m-d')]
+            );
+        }
+
+        // Aplicar cupón si existe
+        $coupon_manager = new WSE_Pro_Coupon_Manager();
+        $coupon = $coupon_manager->get_latest_coupon_for_cart($cart_row->id);
+        
+        if ($coupon && !WC()->cart->has_discount($coupon->coupon_code)) {
+            $applied = WC()->cart->apply_coupon($coupon->coupon_code);
+            
+            if ($applied) {
+                wc_add_notice(
+                    sprintf(
+                        __('¡Cupón "%s" aplicado exitosamente! 🎁', 'woowapp-smsenlinea-pro'),
+                        $coupon->coupon_code
+                    ),
+                    'success'
+                );
+            }
+        }
+
+        // Restaurar datos de checkout
+        if (!empty($cart_row->checkout_data)) {
+            parse_str($cart_row->checkout_data, $checkout_fields);
+            WC()->session->set('wse_pro_recovered_checkout_data', $checkout_fields);
+        }
+
+        // Marcar como recuperado
+        $wpdb->update(
+            self::$abandoned_cart_table_name,
+            ['status' => 'recovered'],
+            ['id' => $cart_row->id],
+            ['%s'],
+            ['%d']
+        );
+
+        // Mensaje de éxito
+        if ($products_restored > 0) {
+            wc_add_notice(
+                sprintf(
+                    _n(
+                        '¡Tu carrito ha sido restaurado con %d producto! 🛒',
+                        '¡Tu carrito ha sido restaurado con %d productos! 🛒',
+                        $products_restored,
+                        'woowapp-smsenlinea-pro'
+                    ),
+                    $products_restored
+                ),
+                'success'
+            );
+        }
+
+        // Advertencia si hubo productos no disponibles
+        if ($products_failed > 0) {
+            wc_add_notice(
+                sprintf(
+                    _n(
+                        '%d producto ya no está disponible.',
+                        '%d productos ya no están disponibles.',
+                        $products_failed,
+                        'woowapp-smsenlinea-pro'
+                    ),
+                    $products_failed
+                ),
+                'notice'
+            );
+        }
+
+        // Redirigir al checkout
+        wp_safe_redirect(wc_get_checkout_url());
+        exit();
+
+    } catch (Exception $e) {
+        // Capturar cualquier error y manejarlo
+        if (get_option('wse_pro_enable_log') === 'yes') {
+            wc_get_logger()->error(
+                "Error en recuperación de carrito: " . $e->getMessage(),
+                ['source' => 'woowapp-' . date('Y-m-d')]
+            );
+        }
+
+        wc_add_notice(
+            __('Ocurrió un error al recuperar tu carrito. Por favor, contacta al soporte.', 'woowapp-smsenlinea-pro'),
+            'error'
+        );
+        
+        wp_safe_redirect(wc_get_cart_url());
+        exit();
     }
+}
     
     public function populate_checkout_fields($value, $input) {
         $recovered_data = WC()->session->get('wse_pro_recovered_checkout_data');
@@ -676,3 +871,4 @@ final class WooWApp {
 }
 
 WooWApp::get_instance();
+
