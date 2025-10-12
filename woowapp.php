@@ -480,6 +480,10 @@ final class WooWApp {
             add_action('wse_pro_process_abandoned_carts', [$this, 'process_abandoned_carts_cron']);
             add_action('template_redirect', [$this, 'handle_cart_recovery_link']);
             add_filter('woocommerce_checkout_get_value', [$this, 'populate_checkout_fields'], 10, 2);
+            
+            // 🆕 Hook adicional para asegurar prellenado de país
+            add_filter('default_checkout_billing_country', [$this, 'default_billing_country'], 10, 1);
+            add_filter('default_checkout_billing_state', [$this, 'default_billing_state'], 10, 1);
         }
 
         // 🆕 Tracking de conversiones
@@ -927,19 +931,58 @@ final class WooWApp {
 
             $this->log_info("Recuperación - ID: {$cart_row->id}, Restaurados: {$products_restored}, Fallidos: {$products_failed}");
 
-            // Restaurar datos del cliente
+            // Restaurar datos del cliente en WC_Customer
             $customer = WC()->customer;
             if ($customer) {
+                // Billing
                 if (!empty($cart_row->billing_first_name)) $customer->set_billing_first_name($cart_row->billing_first_name);
                 if (!empty($cart_row->billing_last_name)) $customer->set_billing_last_name($cart_row->billing_last_name);
                 if (!empty($cart_row->billing_email)) $customer->set_billing_email($cart_row->billing_email);
                 if (!empty($cart_row->billing_phone)) $customer->set_billing_phone($cart_row->billing_phone);
                 if (!empty($cart_row->billing_address_1)) $customer->set_billing_address_1($cart_row->billing_address_1);
                 if (!empty($cart_row->billing_city)) $customer->set_billing_city($cart_row->billing_city);
-                if (!empty($cart_row->billing_state)) $customer->set_billing_state($cart_row->billing_state);
+                
+                // 🔧 FIX: País PRIMERO, luego estado
+                // WooCommerce necesita el país antes de establecer el estado
+                if (!empty($cart_row->billing_country)) {
+                    $customer->set_billing_country($cart_row->billing_country);
+                    $this->log_info("País restaurado: {$cart_row->billing_country}");
+                }
+                
+                if (!empty($cart_row->billing_state)) {
+                    $customer->set_billing_state($cart_row->billing_state);
+                    $this->log_info("Estado restaurado: {$cart_row->billing_state}");
+                }
+                
                 if (!empty($cart_row->billing_postcode)) $customer->set_billing_postcode($cart_row->billing_postcode);
-                if (!empty($cart_row->billing_country)) $customer->set_billing_country($cart_row->billing_country);
+                
+                // Guardar todo
                 $customer->save();
+                
+                // 🔧 FIX ADICIONAL: Guardar también en sesión de WooCommerce
+                // Esto asegura que el checkout tenga los valores correctos
+                if (WC()->session) {
+                    $checkout_fields = [
+                        'billing_first_name' => $cart_row->billing_first_name,
+                        'billing_last_name' => $cart_row->billing_last_name,
+                        'billing_email' => $cart_row->billing_email,
+                        'billing_phone' => $cart_row->billing_phone,
+                        'billing_address_1' => $cart_row->billing_address_1,
+                        'billing_city' => $cart_row->billing_city,
+                        'billing_country' => $cart_row->billing_country,
+                        'billing_state' => $cart_row->billing_state,
+                        'billing_postcode' => $cart_row->billing_postcode,
+                    ];
+                    
+                    // Filtrar valores vacíos
+                    $checkout_fields = array_filter($checkout_fields, function($value) {
+                        return !empty($value);
+                    });
+                    
+                    WC()->session->set('wse_prefill_checkout_fields', $checkout_fields);
+                    
+                    $this->log_info("Datos guardados en sesión WC - País: " . ($cart_row->billing_country ?? 'no definido'));
+                }
             }
 
             // Aplicar cupón
