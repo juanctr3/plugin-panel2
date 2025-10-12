@@ -1308,34 +1308,37 @@ final class WooWApp {
                 ) . '</h3>';
                 
                 foreach ($order->get_items() as $item) {
-                    $product = $item->get_product();
-                    if (!$product) continue;
-                    
-                    $html .= '<div class="review-form-wrapper" style="border:1px solid #ddd; padding:20px; margin-bottom:20px; border-radius: 5px;">';
-                    $html .= '<h4>' . esc_html($product->get_name()) . '</h4>';
-                    $html .= '<form method="post" class="woowapp-review-form">';
-                    $html .= '<p class="comment-form-rating">';
-                    $html .= '<label for="review_rating-' . $product->get_id() . '">' . __('Tu calificación', 'woowapp-smsenlinea-pro') . '&nbsp;<span class="required">*</span></label>';
-                    $html .= '<select name="review_rating" id="review_rating-' . $product->get_id() . '" required>';
-                    $html .= '<option value="5">★★★★★</option>';
-                    $html .= '<option value="4">★★★★☆</option>';
-                    $html .= '<option value="3">★★★☆☆</option>';
-                    $html .= '<option value="2">★★☆☆☆</option>';
-                    $html .= '<option value="1">★☆☆☆☆</option>';
-                    $html .= '</select></p>';
-                    $html .= '<p class="comment-form-comment">';
-                    $html .= '<label for="review_comment-' . $product->get_id() . '">' . __('Tu reseña', 'woowapp-smsenlinea-pro') . '</label>';
-                    $html .= '<textarea name="review_comment" id="review_comment-' . $product->get_id() . '" cols="45" rows="8"></textarea>';
-                    $html .= '</p>';
-                    $html .= '<input type="hidden" name="review_order_id" value="' . esc_attr($order_id) . '" />';
-                    $html .= '<input type="hidden" name="review_product_id" value="' . esc_attr($product->get_id()) . '" />';
-                    $html .= wp_nonce_field('wse_submit_review', 'wse_review_nonce', true, false);
-                    $html .= '<p class="form-submit">';
-                    $html .= '<input name="submit" type="submit" class="submit button" value="' . __('Enviar Reseña', 'woowapp-smsenlinea-pro') . '" />';
-                    $html .= '</p>';
-                    $html .= '</form>';
-                    $html .= '</div>';
-                }
+    $product = $item->get_product();
+    if (!$product) continue;
+
+    // FIX: Get the parent product ID for variations, as reviews are attached to the parent.
+    $product_id_for_review = $product->is_type('variation') ? $product->get_parent_id() : $product->get_id();
+
+    $html .= '<div class="review-form-wrapper" style="border:1px solid #ddd; padding:20px; margin-bottom:20px; border-radius: 5px;">';
+    $html .= '<h4>' . esc_html($product->get_name()) . '</h4>';
+    $html .= '<form method="post" class="woowapp-review-form">';
+    $html .= '<p class="comment-form-rating">';
+    $html .= '<label for="review_rating-' . $product->get_id() . '">' . __('Tu calificación', 'woowapp-smsenlinea-pro') . '&nbsp;<span class="required">*</span></label>';
+    $html .= '<select name="review_rating" id="review_rating-' . $product->get_id() . '" required>';
+    $html .= '<option value="5">★★★★★</option>';
+    $html .= '<option value="4">★★★★☆</option>';
+    $html .= '<option value="3">★★★☆☆</option>';
+    $html .= '<option value="2">★★☆☆☆</option>';
+    $html .= '<option value="1">★☆☆☆☆</option>';
+    $html .= '</select></p>';
+    $html .= '<p class="comment-form-comment">';
+    $html .= '<label for="review_comment-' . $product->get_id() . '">' . __('Tu reseña', 'woowapp-smsenlinea-pro') . '</label>';
+    $html .= '<textarea name="review_comment" id="review_comment-' . $product->get_id() . '" cols="45" rows="8"></textarea>';
+    $html .= '</p>';
+    $html .= '<input type="hidden" name="review_order_id" value="' . esc_attr($order_id) . '" />';
+    $html .= '<input type="hidden" name="review_product_id" value="' . esc_attr($product_id_for_review) . '" />';
+    $html .= wp_nonce_field('wse_submit_review', 'wse_review_nonce', true, false);
+    $html .= '<p class="form-submit">';
+    $html .= '<input name="submit" type="submit" class="submit button" value="' . __('Enviar Reseña', 'woowapp-smsenlinea-pro') . '" />';
+    $html .= '</p>';
+    $html .= '</form>';
+    $html .= '</div>';
+}
                 
                 $html .= '</div>';
                 return $html;
@@ -1772,3 +1775,4 @@ final class WooWApp {
 
 // Inicializar el plugin
 WooWApp::get_instance();
+
