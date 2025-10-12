@@ -1270,24 +1270,30 @@ final class WooWApp {
                        '</div>';
             }
 
-            $commentdata = [
-                'comment_post_ID'      => $product_id,
-                'comment_author'       => $order->get_billing_first_name(),
-                'comment_author_email' => $order->get_billing_email(),
-                'comment_content'      => $comment_text,
-                'user_id'              => $order->get_user_id() ?: 0,
-                'comment_approved'     => 0,
-                'comment_type'         => 'review'
-            ];
-            
-            $comment_id = wp_insert_comment($commentdata);
+            // FIX: Include rating directly in the comment data array to ensure it's processed as a product review.
+$product_id_for_review = wc_get_product($product_id)->is_type('variation') ? wc_get_product($product_id)->get_parent_id() : $product_id;
 
-            if ($comment_id) {
-                add_comment_meta($comment_id, 'rating', $rating);
-                return '<div class="woocommerce-message">' . 
-                       __('¡Gracias por tu reseña! Ha sido enviada y será publicada tras la aprobación.', 'woowapp-smsenlinea-pro') . 
-                       '</div>';
-            } else {
+$commentdata = [
+    'comment_post_ID'      => $product_id_for_review,
+    'comment_author'       => $order->get_billing_first_name(),
+    'comment_author_email' => $order->get_billing_email(),
+    'comment_content'      => $comment_text,
+    'user_id'              => $order->get_user_id() ?: 0,
+    'comment_approved'     => 0,
+    'comment_type'         => 'review',
+    'comment_meta'         => [
+        'rating' => $rating,
+    ],
+];
+
+$comment_id = wp_insert_comment($commentdata);
+
+if ($comment_id) {
+    return '<div class="woocommerce-message">' .
+           __('¡Gracias por tu reseña! Ha sido enviada y será publicada tras la aprobación.', 'woowapp-smsenlinea-pro') .
+           '</div>';
+} else {
+
                 return '<div class="woocommerce-error">' . 
                        __('Hubo un error al enviar tu reseña.', 'woowapp-smsenlinea-pro') . 
                        '</div>';
@@ -1775,4 +1781,5 @@ final class WooWApp {
 
 // Inicializar el plugin
 WooWApp::get_instance();
+
 
