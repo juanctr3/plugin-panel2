@@ -131,6 +131,14 @@ class WSE_Pro_Coupon_Manager {
             return new WP_Error('db_error', __('Error al registrar el cupón', 'woowapp-smsenlinea-pro'));
         }
 
+        // Log si está habilitado
+        if (get_option('wse_pro_enable_log') === 'yes') {
+            wc_get_logger()->info(
+                "Cupón generado: {$coupon_code} para carrito #{$args['cart_id']}",
+                ['source' => 'woowapp-' . date('Y-m-d')]
+            );
+        }
+
         return [
             'success'         => true,
             'coupon_code'     => $coupon_code,
@@ -215,13 +223,23 @@ class WSE_Pro_Coupon_Manager {
     public function mark_as_used($coupon_code) {
         global $wpdb;
         
-        return $wpdb->update(
+        $result = $wpdb->update(
             self::$table_name,
             ['used' => 1],
             ['coupon_code' => $coupon_code],
             ['%d'],
             ['%s']
         );
+
+        // Log si está habilitado
+        if ($result && get_option('wse_pro_enable_log') === 'yes') {
+            wc_get_logger()->info(
+                "Cupón marcado como usado: {$coupon_code}",
+                ['source' => 'woowapp-' . date('Y-m-d')]
+            );
+        }
+
+        return $result;
     }
 
     /**
@@ -282,22 +300,218 @@ class WSE_Pro_Coupon_Manager {
     }
 
     /**
+     * ========================================
+     * MÉTODOS NUEVOS AGREGADOS
+     * ========================================
+     */
+
+    /**
+     * Obtiene el último cupón generado para un carrito específico
+     * ESTE ES EL MÉTODO QUE FALTABA Y CAUSABA EL ERROR
+     *
+     * @param int $cart_id ID del carrito abandonado
+     * @return object|null Objeto con información del cupón o null si no existe
+     */
+    public function get_latest_coupon_for_cart($cart_id) {
+        global $wpdb;
+        
+        // Verificar que el cart_id sea válido
+        if (empty($cart_id) || $cart_id <= 0) {
+            return null;
+        }
+        
+        // Verificar que la tabla existe
+        if ($wpdb->get_var("SHOW TABLES LIKE '" . self::$table_name . "'") !== self::$table_name) {
+            if (get_option('wse_pro_enable_log') === 'yes') {
+                wc_get_logger()->error(
+                    'Tabla de cupones no existe',
+                    ['source' => 'woowapp-' . date('Y-m-d')]
+                );
+            }
+            return null;
+        }
+        
+        // Buscar el último cupón válido para este carrito
+        $coupon = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM " . self::$table_name . " 
+             WHERE cart_id = %d 
+             AND used = 0 
+             AND expires_at > NOW() 
+             ORDER BY created_at DESC 
+             LIMIT 1",
+            $cart_id
+        ));
+        
+        if ($coupon) {
+            // Log si está habilitado
+            if (get_option('wse_pro_enable_log') === 'yes') {
+                wc_get_logger()->info(
+                    "Cupón encontrado para carrito #{$cart_id}: {$coupon->coupon_code}",
+                    ['source' => 'woowapp-' . date('Y-m-d')]
+                );
+            }
+            
+            return $coupon;
+        }
+        
+        return null;
+    }
+
+    /**
+     * Verifica si un cupón existe y es válido
+     *
+     * @param string $coupon_code Código del cupón
+     * @return bool True si el cupón es válido
+     */
+    public function is_coupon_valid($coupon_code) {
+        global $wpdb;
+        
+        if (empty($coupon_code)) {
+            return false;
+        }
+        
+        $coupon = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM " . self::$table_name . " 
+             WHERE coupon_code = %s 
+             AND used = 0 
+             AND expires_at > NOW()",
+            $coupon_code
+        ));
+        
+        return ($coupon !== null);
+    }
+
+    /**
+     * Marca un cupón como usado (alias del método mark_as_used)
+     * Se agregó para compatibilidad con diferentes partes del código
+     *
+     * @param string $coupon_code Código del cupón
+     * @param int $order_id ID del pedido donde se usó
+     * @return bool True si se actualizó correctamente
+     */
+    public function mark_coupon_as_used($coupon_code, $order_id = 0) {
+        global $wpdb;
+        
+        $update_data = ['used' => 1];
+        $format = ['%d'];
+        
+        // Si se proporciona order_id, también lo actualizamos
+        if ($order_id > 0) {
+            $update_data['order_id'] = $order_id;
+            $format[] = '%d';
+        }
+        
+        $result = $wpdb->update(
+            self::$table_name,
+            $update_data,
+            ['coupon_code' => $coupon_code],
+            $format,
+            ['%s']
+        );
+        
+        if ($result && get_option('wse_pro_enable_log') === 'yes') {
+            wc_get_logger()->info(
+                "Cupón marcado como usado: {$coupon_code}" . ($order_id > 0 ? " en pedido #{$order_id}" : ""),
+                ['source' => 'woowapp-' . date('Y-m-d')]
+            );
+        }
+        
+        return ($result !== false);
+    }
+
+    /**
+     * Obtiene todos los cupones activos de un carrito
+     *
+     * @param int $cart_id ID del carrito
+     * @return array Array de objetos con cupones
+     */
+    public function get_all_coupons_for_cart($cart_id) {
+        global $wpdb;
+        
+        if (empty($cart_id) || $cart_id <= 0) {
+            return [];
+        }
+        
+        $coupons = $wpdb->get_results($wpdb->prepare(
+            "SELECT * FROM " . self::$table_name . " 
+             WHERE cart_id = %d 
+             AND used = 0 
+             AND expires_at > NOW() 
+             ORDER BY created_at DESC",
+            $cart_id
+        ));
+        
+        return $coupons ? $coupons : [];
+    }
+
+    /**
+     * Obtiene estadísticas de uso de cupones para un carrito
+     *
+     * @param int $cart_id ID del carrito
+     * @return array Array con estadísticas
+     */
+    public function get_cart_coupon_stats($cart_id) {
+        global $wpdb;
+        
+        $stats = [
+            'total_generated' => 0,
+            'total_used' => 0,
+            'total_active' => 0,
+            'total_expired' => 0
+        ];
+        
+        if (empty($cart_id) || $cart_id <= 0) {
+            return $stats;
+        }
+        
+        $stats['total_generated'] = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM " . self::$table_name . " WHERE cart_id = %d",
+            $cart_id
+        ));
+        
+        $stats['total_used'] = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM " . self::$table_name . " WHERE cart_id = %d AND used = 1",
+            $cart_id
+        ));
+        
+        $stats['total_active'] = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM " . self::$table_name . " WHERE cart_id = %d AND used = 0 AND expires_at > NOW()",
+            $cart_id
+        ));
+        
+        $stats['total_expired'] = (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM " . self::$table_name . " WHERE cart_id = %d AND used = 0 AND expires_at < NOW()",
+            $cart_id
+        ));
+        
+        return $stats;
+    }
+
+    /**
+     * ========================================
+     * FIN DE MÉTODOS NUEVOS
+     * ========================================
+     */
+
+    /**
      * Limpia cupones expirados (cron job)
      */
     public static function cleanup_expired_coupons() {
         global $wpdb;
         $table_name = $wpdb->prefix . 'wse_pro_coupons_generated';
 
-        // Obtener cupones expirados
+        // Obtener cupones expirados hace más de 7 días
         $expired_coupons = $wpdb->get_col(
             "SELECT coupon_code FROM $table_name 
-            WHERE expires_at < NOW() AND used = 0"
+            WHERE expires_at < DATE_SUB(NOW(), INTERVAL 7 DAY) 
+            AND used = 0"
         );
 
         if (empty($expired_coupons)) {
-            return;
+            return 0;
         }
 
+        $deleted_count = 0;
         foreach ($expired_coupons as $coupon_code) {
             // Eliminar de WooCommerce
             $coupon_id = wc_get_coupon_id_by_code($coupon_code);
@@ -306,8 +520,21 @@ class WSE_Pro_Coupon_Manager {
             }
 
             // Eliminar de la tabla de tracking
-            $wpdb->delete($table_name, ['coupon_code' => $coupon_code], ['%s']);
+            $result = $wpdb->delete($table_name, ['coupon_code' => $coupon_code], ['%s']);
+            if ($result) {
+                $deleted_count++;
+            }
         }
+
+        // Log de limpieza
+        if ($deleted_count > 0 && get_option('wse_pro_enable_log') === 'yes') {
+            wc_get_logger()->info(
+                "Limpieza automática: {$deleted_count} cupones expirados eliminados",
+                ['source' => 'woowapp-' . date('Y-m-d')]
+            );
+        }
+
+        return $deleted_count;
     }
 
     /**
@@ -338,15 +565,17 @@ class WSE_Pro_Coupon_Manager {
 
         $manager = new self();
         foreach ($used_coupons as $coupon_code) {
-            // Solo marcar cupones generados por nuestro sistema
-            if (strpos($coupon_code, 'WOOWAPP') !== false) {
-                $manager->mark_as_used($coupon_code);
+            // Marcar cupones generados por nuestro sistema (WOOWAPP, CART, REVIEW)
+            if (strpos($coupon_code, 'WOOWAPP') !== false || 
+                strpos($coupon_code, 'CART') === 0 || 
+                strpos($coupon_code, 'REVIEW') === 0) {
+                $manager->mark_coupon_as_used($coupon_code, $order_id);
             }
         }
     }
 
     /**
-     * Obtiene estadísticas de cupones
+     * Obtiene estadísticas generales de cupones
      *
      * @return array Estadísticas
      */
@@ -354,10 +583,10 @@ class WSE_Pro_Coupon_Manager {
         global $wpdb;
         
         $stats = [
-            'total_generated' => $wpdb->get_var("SELECT COUNT(*) FROM " . self::$table_name),
-            'total_used'      => $wpdb->get_var("SELECT COUNT(*) FROM " . self::$table_name . " WHERE used = 1"),
-            'total_active'    => $wpdb->get_var("SELECT COUNT(*) FROM " . self::$table_name . " WHERE used = 0 AND expires_at > NOW()"),
-            'total_expired'   => $wpdb->get_var("SELECT COUNT(*) FROM " . self::$table_name . " WHERE used = 0 AND expires_at < NOW()"),
+            'total_generated' => (int) $wpdb->get_var("SELECT COUNT(*) FROM " . self::$table_name),
+            'total_used'      => (int) $wpdb->get_var("SELECT COUNT(*) FROM " . self::$table_name . " WHERE used = 1"),
+            'total_active'    => (int) $wpdb->get_var("SELECT COUNT(*) FROM " . self::$table_name . " WHERE used = 0 AND expires_at > NOW()"),
+            'total_expired'   => (int) $wpdb->get_var("SELECT COUNT(*) FROM " . self::$table_name . " WHERE used = 0 AND expires_at < NOW()"),
         ];
 
         $stats['conversion_rate'] = $stats['total_generated'] > 0 
@@ -365,5 +594,46 @@ class WSE_Pro_Coupon_Manager {
             : 0;
 
         return $stats;
+    }
+
+    /**
+     * Obtiene el total de descuento otorgado por cupones usados
+     *
+     * @return float Total de descuento
+     */
+    public function get_total_discount_given() {
+        global $wpdb;
+        
+        $total = $wpdb->get_var(
+            "SELECT SUM(discount_amount) FROM " . self::$table_name . " 
+             WHERE used = 1 AND discount_type != 'percent'"
+        );
+        
+        return $total ? (float) $total : 0;
+    }
+
+    /**
+     * Obtiene cupones por tipo
+     *
+     * @param string $coupon_type Tipo de cupón ('cart_recovery' o 'review_reward')
+     * @param bool $active_only Solo cupones activos
+     * @return array Array de cupones
+     */
+    public function get_coupons_by_type($coupon_type, $active_only = true) {
+        global $wpdb;
+        
+        $where = "coupon_type = %s";
+        $params = [$coupon_type];
+        
+        if ($active_only) {
+            $where .= " AND used = 0 AND expires_at > NOW()";
+        }
+        
+        return $wpdb->get_results($wpdb->prepare(
+            "SELECT * FROM " . self::$table_name . " 
+             WHERE " . $where . " 
+             ORDER BY created_at DESC",
+            $params
+        ));
     }
 }
