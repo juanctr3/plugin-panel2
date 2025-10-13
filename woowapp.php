@@ -1298,15 +1298,18 @@ final class WooWApp {
     $comment_id = wp_insert_comment($commentdata);
 
     if ($comment_id) {
-        // Notifica a WooCommerce sobre la nueva valoración para que actualice los contadores y promedios.
-        do_action('wp_insert_comment', $comment_id, (object) $commentdata);
-        wc_update_product_review_count($product_id_for_review);
-
-        return '<div class="woocommerce-message">' .
-               __('¡Gracias por tu reseña! Ha sido publicada exitosamente.', 'woowapp-smsenlinea-pro') .
-               '</div>';
-    } else {
-        return '<div class="woocommerce-error">' .
+    // Notifica a WooCommerce sobre la nueva valoración para que actualice los contadores y promedios.
+    do_action('wp_insert_comment', $comment_id, (object) $commentdata);
+    wc_update_product_review_count($product_id_for_review);
+        // Lógica de Agradecimiento y Cupón
+    if ('yes' === get_option('wse_pro_enable_review_reward', 'no')) {
+        $this->send_review_thank_you_message($order);
+    }
+     return '<div class="woocommerce-message">' .
+           __('¡Gracias por tu reseña! Ha sido publicada exitosamente.', 'woowapp-smsenlinea-pro') .
+           '</div>';
+} else {
+       return '<div class="woocommerce-error">' .
                __('Hubo un error al enviar tu reseña.', 'woowapp-smsenlinea-pro') .
                '</div>';
     }
@@ -1858,6 +1861,7 @@ public function send_review_thank_you_message($order) {
 
 // Inicializar el plugin
 WooWApp::get_instance();
+
 
 
 
