@@ -1298,18 +1298,15 @@ final class WooWApp {
     $comment_id = wp_insert_comment($commentdata);
 
     if ($comment_id) {
-    // Notifica a WooCommerce sobre la nueva valoración para que actualice los contadores y promedios.
-    do_action('wp_insert_comment', $comment_id, (object) $commentdata);
-    wc_update_product_review_count($product_id_for_review);
-        // Lógica de Agradecimiento y Cupón
-    if ('yes' === get_option('wse_pro_enable_review_reward', 'no')) {
-        $this->send_review_thank_you_message($order);
-    }
-     return '<div class="woocommerce-message">' .
-           __('¡Gracias por tu reseña! Ha sido publicada exitosamente.', 'woowapp-smsenlinea-pro') .
-           '</div>';
-} else {
-       return '<div class="woocommerce-error">' .
+        // Notifica a WooCommerce sobre la nueva valoración para que actualice los contadores y promedios.
+        do_action('wp_insert_comment', $comment_id, (object) $commentdata);
+        wc_update_product_review_count($product_id_for_review);
+
+        return '<div class="woocommerce-message">' .
+               __('¡Gracias por tu reseña! Ha sido publicada exitosamente.', 'woowapp-smsenlinea-pro') .
+               '</div>';
+    } else {
+        return '<div class="woocommerce-error">' .
                __('Hubo un error al enviar tu reseña.', 'woowapp-smsenlinea-pro') .
                '</div>';
     }
@@ -1750,72 +1747,7 @@ final class WooWApp {
                 exit;
         }
     }
-/**
- * Envía el mensaje de agradecimiento y el cupón después de una reseña.
- * @param WC_Order $order El objeto del pedido.
- */
-public function send_review_thank_you_message($order) {
-    $template = get_option('wse_pro_review_reward_message');
-    if (empty($template) || !$order) {
-        return;
-    }
 
-    $coupon_data = null;
-    // Verificar si los cupones de recompensa están habilitados
-    if ('yes' === get_option('wse_pro_review_reward_coupon_enable', 'no')) {
-        $coupon_manager = WSE_Pro_Coupon_Manager::get_instance();
-        
-        $coupon_result = $coupon_manager->generate_coupon([
-            'discount_type'   => get_option('wse_pro_review_reward_coupon_type', 'percent'),
-            'discount_amount' => (float) get_option('wse_pro_review_reward_coupon_amount', 15),
-            'expiry_days'     => (int) get_option('wse_pro_review_reward_coupon_expiry', 14),
-            'customer_phone'  => $order->get_billing_phone(),
-            'customer_email'  => $order->get_billing_email(),
-            'order_id'        => $order->get_id(),
-            'coupon_type'     => 'review_reward',
-            'prefix'          => get_option('wse_pro_review_reward_coupon_prefix', 'RESEÑA')
-        ]);
-        
-        if (!is_wp_error($coupon_result) && isset($coupon_result['success']) && $coupon_result['success']) {
-            $coupon_data = [
-                'code'               => $coupon_result['coupon_code'],
-                'formatted_discount' => $coupon_result['formatted_discount'],
-                'formatted_expiry'   => $coupon_result['formatted_expiry']
-            ];
-        }
-    }
-
-    // Reemplazar placeholders manualmente para este mensaje específico.
-    $placeholders = [
-        '{shop_name}'       => get_bloginfo('name'),
-        '{customer_name}'   => $order->get_billing_first_name(),
-        '{customer_fullname}'=> $order->get_formatted_billing_full_name(),
-        '{order_id}'        => $order->get_order_number(),
-        '{coupon_code}'     => $coupon_data['code'] ?? '',
-        '{coupon_amount}'   => $coupon_data['formatted_discount'] ?? '',
-        '{coupon_expires}'  => $coupon_data['formatted_expiry'] ?? '',
-        '{discount_amount}' => $coupon_data['formatted_discount'] ?? '', // Alias por compatibilidad
-    ];
-
-    $message = str_replace(array_keys($placeholders), array_values($placeholders), $template);
-
-    // Si no se generó un cupón, limpiar los placeholders vacíos del mensaje
-    if (is_null($coupon_data)) {
-        $message = preg_replace('/\{coupon_code\}|\{coupon_amount\}|\{coupon_expires\}|\{discount_amount\}/', '', $message);
-        // Limpiar frases residuales comunes
-        $message = str_replace(
-            ['aquí tienes un cupón de  para tu próxima compra: . ¡Válido hasta !', 'Usa el código  para un descuento de .'], 
-            '', 
-            $message
-        );
-        $message = trim(preg_replace('/\s+/', ' ', $message));
-    }
-
-    $api_handler = new WSE_Pro_API_Handler();
-    $api_handler->send_message($order->get_billing_phone(), $message, $order, 'customer');
-
-    $order->add_order_note(__('Mensaje de agradecimiento por reseña enviado al cliente.', 'woowapp-smsenlinea-pro'));
-}
     public function check_review_page_exists() {
         $page_id = get_option('wse_pro_review_page_id');
         
@@ -1861,8 +1793,6 @@ public function send_review_thank_you_message($order) {
 
 // Inicializar el plugin
 WooWApp::get_instance();
-
-
 
 
 
