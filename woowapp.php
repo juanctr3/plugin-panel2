@@ -1251,54 +1251,66 @@ final class WooWApp {
 
     private function get_review_form_html() {
         if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['wse_review_nonce'])) {
-            if (!wp_verify_nonce($_POST['wse_review_nonce'], 'wse_submit_review')) {
-                return '<div class="woocommerce-error">' . 
-                       __('Error de seguridad. Inténtalo de nuevo.', 'woowapp-smsenlinea-pro') . 
-                       '</div>';
-            }
+    if (!wp_verify_nonce($_POST['wse_review_nonce'], 'wse_submit_review')) {
+        return '<div class="woocommerce-error">' .
+               __('Error de seguridad. Inténtalo de nuevo.', 'woowapp-smsenlinea-pro') .
+               '</div>';
+    }
 
-            $order_id = isset($_POST['review_order_id']) ? absint($_POST['review_order_id']) : 0;
-            $product_id = isset($_POST['review_product_id']) ? absint($_POST['review_product_id']) : 0;
-            $rating = isset($_POST['review_rating']) ? absint($_POST['review_rating']) : 5;
-            $comment_text = isset($_POST['review_comment']) ? sanitize_textarea_field($_POST['review_comment']) : '';
-            
-            $order = wc_get_order($order_id);
-            
-            if (!$order) {
-                return '<div class="woocommerce-error">' . 
-                       __('Pedido no válido.', 'woowapp-smsenlinea-pro') . 
-                       '</div>';
-            }
+    $order_id = isset($_POST['review_order_id']) ? absint($_POST['review_order_id']) : 0;
+    $product_id = isset($_POST['review_product_id']) ? absint($_POST['review_product_id']) : 0;
+    $rating = isset($_POST['review_rating']) ? absint($_POST['review_rating']) : 5;
+    $comment_text = isset($_POST['review_comment']) ? sanitize_textarea_field($_POST['review_comment']) : '';
 
-            // FIX: Include rating directly in the comment data array to ensure it's processed as a product review.
-$product_id_for_review = wc_get_product($product_id)->is_type('variation') ? wc_get_product($product_id)->get_parent_id() : $product_id;
+    $order = wc_get_order($order_id);
+    if (!$order) {
+        return '<div class="woocommerce-error">' . __('Pedido no válido.', 'woowapp-smsenlinea-pro') . '</div>';
+    }
 
-$commentdata = [
-    'comment_post_ID'      => $product_id_for_review,
-    'comment_author'       => $order->get_billing_first_name(),
-    'comment_author_email' => $order->get_billing_email(),
-    'comment_content'      => $comment_text,
-    'user_id'              => $order->get_user_id() ?: 0,
-    'comment_approved'     => 0,
-    'comment_type'         => 'review',
-    'comment_meta'         => [
-        'rating' => $rating,
-    ],
-];
+    $product = wc_get_product($product_id);
+    if (!$product) {
+        return '<div class="woocommerce-error">' . __('Producto no válido.', 'woowapp-smsenlinea-pro') . '</div>';
+    }
 
-$comment_id = wp_insert_comment($commentdata);
+    // Asegura que la reseña se asigne al producto principal, no a la variación.
+    $product_id_for_review = $product->is_type('variation') ? $product->get_parent_id() : $product->get_id();
 
-if ($comment_id) {
-    return '<div class="woocommerce-message">' .
-           __('¡Gracias por tu reseña! Ha sido enviada y será publicada tras la aprobación.', 'woowapp-smsenlinea-pro') .
-           '</div>';
-} else {
+    // Verifica si el cliente compró el producto para marcar la reseña como "verificada".
+    $verified = wc_customer_bought_product($order->get_billing_email(), $order->get_user_id(), $product_id_for_review);
 
-                return '<div class="woocommerce-error">' . 
-                       __('Hubo un error al enviar tu reseña.', 'woowapp-smsenlinea-pro') . 
-                       '</div>';
-            }
-        }
+    $commentdata = [
+        'comment_post_ID'      => $product_id_for_review,
+        'comment_author'       => $order->get_billing_first_name(),
+        'comment_author_email' => $order->get_billing_email(),
+        'comment_author_url'   => '',
+        'comment_content'      => $comment_text,
+        'comment_agent'        => 'WooWApp',
+        'comment_date'         => current_time('mysql'),
+        'user_id'              => $order->get_user_id() ?: 0,
+        'comment_approved'     => 1, // Auto-aprueba el comentario para que se clasifique correctamente.
+        'comment_type'         => 'review',
+        'comment_meta'         => [
+            'rating'   => $rating,
+            'verified' => $verified ? 1 : 0, // Añade el estado de verificación.
+        ],
+    ];
+
+    $comment_id = wp_insert_comment($commentdata);
+
+    if ($comment_id) {
+        // Notifica a WooCommerce sobre la nueva valoración para que actualice los contadores y promedios.
+        do_action('wp_insert_comment', $comment_id, (object) $commentdata);
+        wc_update_product_review_count($product_id_for_review);
+
+        return '<div class="woocommerce-message">' .
+               __('¡Gracias por tu reseña! Ha sido publicada exitosamente.', 'woowapp-smsenlinea-pro') .
+               '</div>';
+    } else {
+        return '<div class="woocommerce-error">' .
+               __('Hubo un error al enviar tu reseña.', 'woowapp-smsenlinea-pro') .
+               '</div>';
+    }
+}
 
         $order_id = isset($_GET['order_id']) ? absint($_GET['order_id']) : 0;
         $order_key = isset($_GET['key']) ? sanitize_text_field($_GET['key']) : '';
@@ -1781,5 +1793,6 @@ if ($comment_id) {
 
 // Inicializar el plugin
 WooWApp::get_instance();
+
 
 
