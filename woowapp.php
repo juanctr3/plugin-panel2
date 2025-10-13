@@ -641,52 +641,65 @@ final class WooWApp {
      * 🔧 PROCESAR CARRITO INDIVIDUAL - VERSIÓN CORREGIDA
      */
     private function process_single_cart($cart) {
-        $cart_id = $cart->id;
-        $created_at = strtotime($cart->created_at);
-        $current_time = current_time('timestamp');
-        $minutes_elapsed = floor(($current_time - $created_at) / 60);
+    $cart_id = $cart->id;
+    $created_at = strtotime($cart->created_at);
+    $current_time = current_time('timestamp');
+    $minutes_elapsed = floor(($current_time - $created_at) / 60);
+
+    $this->log_info("Procesando carrito #{$cart_id}. Minutos transcurridos: {$minutes_elapsed}");
+
+    // Iterar a través de los 3 posibles mensajes de recuperación
+    for ($i = 1; $i <= 3; $i++) {
+        // Obtener la configuración para este mensaje
+        $message_enabled = get_option("wse_pro_abandoned_cart_enable_msg_{$i}", 'no');
         
-        $this->log_info("Procesando carrito #{$cart_id} - {$minutes_elapsed} minutos desde creación");
+        // Si este mensaje no está activado, saltar al siguiente.
+        if ($message_enabled !== 'yes') {
+            continue;
+        }
         
-        // Verificar cada mensaje (1, 2, 3)
-        for ($i = 1; $i <= 3; $i++) {
-            // ✅ FIX: Usar el nombre correcto de las opciones
-            $message_enabled = get_option("wse_pro_abandoned_cart_enable_msg_{$i}", 'no');
-            $message_delay = (int) get_option("wse_pro_abandoned_cart_time_{$i}", 60);
-            $message_unit = get_option("wse_pro_abandoned_cart_unit_{$i}", 'minutes');
+        // Verificar si este mensaje ya fue enviado
+        $messages_sent = explode(',', $cart->messages_sent);
+        if (isset($messages_sent[$i - 1]) && $messages_sent[$i - 1] == '1') {
+            continue; // Si ya se envió, saltar al siguiente.
+        }
+
+        $message_delay = (int) get_option("wse_pro_abandoned_cart_time_{$i}", 60);
+        $message_unit = get_option("wse_pro_abandoned_cart_unit_{$i}", 'minutes');
+
+        // Calcular el retraso total en minutos
+        $delay_in_minutes = $message_delay;
+        if ($message_unit === 'hours') {
+            $delay_in_minutes = $message_delay * 60;
+        } elseif ($message_unit === 'days') {
+            $delay_in_minutes = $message_delay * 1440;
+        }
+
+        $this->log_info("→ Verificando Mensaje #{$i}: Requiere {$delay_in_minutes} min. Actual: {$minutes_elapsed} min.");
+
+        // Comprobar si ha pasado suficiente tiempo para enviar este mensaje
+        if ($minutes_elapsed >= $delay_in_minutes) {
+            $this->log_info("✅ Condición de tiempo cumplida para Mensaje #{$i}. Intentando enviar...");
             
-            if ($message_enabled !== 'yes') {
-                $this->log_info("→ Mensaje #{$i} desactivado");
-                continue;
-            }
+            // Intentar enviar el mensaje
+            $sent_successfully = $this->send_abandoned_cart_message($cart, $i);
             
-            // Calcular delay en minutos
-            $delay_in_minutes = $message_delay;
-            if ($message_unit === 'hours') {
-                $delay_in_minutes = $message_delay * 60;
-            } elseif ($message_unit === 'days') {
-                $delay_in_minutes = $message_delay * 1440;
-            }
-            
-            // Verificar si es momento de enviar
-            if ($minutes_elapsed >= $delay_in_minutes) {
-                // Verificar si ya se envió
-                $messages_sent = explode(',', $cart->messages_sent);
-                $already_sent = isset($messages_sent[$i - 1]) && $messages_sent[$i - 1] == '1';
-                
-                if (!$already_sent) {
-                    $this->log_info("→ Mensaje #{$i} debe enviarse (delay: {$delay_in_minutes} min)");
-                    $this->send_abandoned_cart_message($cart, $i);
-                    break; // Solo enviar un mensaje por ejecución
-                } else {
-                    $this->log_info("→ Mensaje #{$i} ya fue enviado");
-                }
+            // Si el envío fue exitoso, salimos del bucle para no enviar más mensajes a este carrito por ahora.
+            // Si falla, el sistema lo reintentará en la próxima ejecución del cron.
+            if ($sent_successfully) {
+                $this->log_info("👍 Envío de Mensaje #{$i} exitoso para carrito #{$cart_id}.");
+                break; // Salir del bucle for.
             } else {
-                $remaining = $delay_in_minutes - $minutes_elapsed;
-                $this->log_info("→ Mensaje #{$i} faltan {$remaining} minutos (delay: {$delay_in_minutes} min)");
+                $this->log_warning("⚠️ Fallo al enviar Mensaje #{$i} para carrito #{$cart_id}. Se reintentará más tarde.");
             }
+        } else {
+            // Si aún no es tiempo de enviar este mensaje, tampoco lo será para los siguientes (ya que tienen un retraso mayor).
+            // Por lo tanto, detenemos la verificación para este carrito.
+            $this->log_info("→ Aún no es tiempo para Mensaje #{$i}. Se detiene la verificación para este carrito.");
+            break; 
         }
     }
+}
 
     /**
      * 🔧 ENVIAR MENSAJE - VERSIÓN COMPLETAMENTE REESCRITA v2.2.2
@@ -1861,6 +1874,7 @@ public function send_review_thank_you_message($order) {
 
 // Inicializar el plugin
 WooWApp::get_instance();
+
 
 
 
