@@ -704,138 +704,86 @@ final class WooWApp {
      * 🔧 ENVIAR MENSAJE - VERSIÓN COMPLETAMENTE REESCRITA v2.2.2
      * 🆕 Incluye protección anti-spam y límite de mensajes
      */
-    private function send_abandoned_cart_message($cart_row, $message_number) {
-        global $wpdb;
+    ENVIAR MENSAJE DE CARRITO ABANDONADO - VERSIÓN CORREGIDA v2.2.3
+ */
+private function send_abandoned_cart_message($cart_row, $message_number) {
+    global $wpdb;
+
+    $this->log_info("📤 Iniciando envío de Mensaje #{$message_number} para carrito #{$cart_row->id}");
+
+    if ($cart_row->status !== 'active') {
+        $this->log_warning("⚠️ Envío cancelado: Carrito #{$cart_row->id} ya no está activo (Estado: {$cart_row->status})");
+        return false;
+    }
+
+    $template = get_option('wse_pro_abandoned_cart_message_' . $message_number);
+    if (empty($template)) {
+        $this->log_error("❌ ERROR: La plantilla para el Mensaje #{$message_number} está vacía.");
+        return false;
+    }
+
+    $coupon_data = null;
+    $coupon_enabled = get_option("wse_pro_abandoned_cart_coupon_enable_{$message_number}", 'no');
+
+    if ($coupon_enabled === 'yes') {
+        $coupon_manager = WSE_Pro_Coupon_Manager::get_instance();
+        $prefix = get_option("wse_pro_abandoned_cart_coupon_prefix_{$message_number}", 'WOOWAPP-M' . $message_number);
         
-        $this->log_info("📤 Iniciando envío mensaje #{$message_number} para carrito #{$cart_row->id}");
-        
-        // 1. Validar estado del carrito
-        if ($cart_row->status !== 'active') {
-            $this->log_warning("⚠️ Carrito #{$cart_row->id} no está activo (status: {$cart_row->status})");
-            return false;
-        }
-        
-        // 2. Verificar que el mensaje no se haya enviado
-        $messages_sent = explode(',', $cart_row->messages_sent);
-        if (isset($messages_sent[$message_number - 1]) && $messages_sent[$message_number - 1] == '1') {
-            $this->log_info("⚠️ Mensaje #{$message_number} ya enviado anteriormente");
-            return false;
-        }
-        
-        // 🔧 FIX 5: Verificar límite de mensajes por teléfono en 24 horas
-        $phone = $cart_row->phone;
-        if (!empty($phone)) {
-            $messages_last_24h = $wpdb->get_var($wpdb->prepare(
-                "SELECT COUNT(*) FROM " . self::$tracking_table_name . " t
-                 JOIN " . self::$abandoned_cart_table_name . " c ON t.cart_id = c.id
-                 WHERE c.phone = %s 
-                 AND t.event_type = 'sent'
-                 AND t.created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)",
-                $phone
-            ));
-            
-            // 🚫 Máximo 3 mensajes en 24 horas por teléfono
-            if ($messages_last_24h >= 3) {
-                $this->log_warning("🚫 LÍMITE ALCANZADO: {$phone} ya recibió {$messages_last_24h} mensajes en 24h");
-                return false;
-            }
-        }
-        
-        // 🔧 FIX 6: Verificar cooldown después de click (1 hora)
-        $clicked_recently = $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM " . self::$tracking_table_name . " 
-             WHERE cart_id = %d 
-             AND event_type = 'click' 
-             AND created_at > DATE_SUB(NOW(), INTERVAL 1 HOUR)",
-            $cart_row->id
-        ));
-        
-        if ($clicked_recently > 0) {
-            $this->log_info("⏳ COOLDOWN: Usuario hizo click hace menos de 1 hora - Esperando");
-            return false;
-        }
-        
-        // 3. Obtener plantilla
-        $template = get_option('wse_pro_abandoned_cart_message_' . $message_number);
-        if (empty($template)) {
-            $this->log_error("❌ ERROR: Plantilla mensaje #{$message_number} vacía");
-            return false;
-        }
-        
-        // 4. Generar cupón si está habilitado
-        $coupon_data = null;
-        $coupon_enabled = get_option("wse_pro_abandoned_cart_coupon_enable_{$message_number}", 'no');
-        
-        if ($coupon_enabled === 'yes') {
-            $coupon_manager = WSE_Pro_Coupon_Manager::get_instance();
-            
-            $prefix = get_option(
-                "wse_pro_abandoned_cart_coupon_prefix_{$message_number}",
-                'woowapp-m' . $message_number
-            );
-            
-            $coupon_result = $coupon_manager->generate_coupon([
-                'discount_type'   => get_option("wse_pro_abandoned_cart_coupon_type_{$message_number}", 'percent'),
-                'discount_amount' => (float) get_option("wse_pro_abandoned_cart_coupon_amount_{$message_number}", 10),
-                'expiry_days'     => (int) get_option("wse_pro_abandoned_cart_coupon_expiry_{$message_number}", 7),
-                'customer_phone'  => $cart_row->phone,
-                'customer_email'  => $cart_row->billing_email,
-                'cart_id'         => $cart_row->id,
-                'message_number'  => $message_number,
-                'coupon_type'     => 'cart_recovery',
-                'prefix'          => $prefix
-            ]);
-            
-            if (!is_wp_error($coupon_result)) {
-                $coupon_data = $coupon_result;
-                $this->log_info("🎁 Cupón generado: {$coupon_result['code']}");
-            }
-        }
-        
-        // 5. Reemplazar placeholders
-        $message = WSE_Pro_Placeholders::replace_for_cart($template, $cart_row, $coupon_data);
-        
-        $this->log_info("📝 Mensaje preparado: " . substr($message, 0, 100) . "...");
-        
-        // 6. Crear objeto para API
-        $cart_obj = (object)[
-            'id' => $cart_row->id,
-            'phone' => $cart_row->phone,
-            'cart_contents' => $cart_row->cart_contents
-        ];
-        
-        // 7. Enviar mensaje
-        $api_handler = new WSE_Pro_API_Handler();
-        $result = $api_handler->send_message($cart_row->phone, $message, $cart_obj, 'customer');
-        
-        // 8. Procesar resultado
-        if ($result['success']) {
-            // Actualizar estado en BD
-            $messages_sent[$message_number - 1] = '1';
-            
-            $wpdb->update(
-                self::$abandoned_cart_table_name,
-                ['messages_sent' => implode(',', $messages_sent)],
-                ['id' => $cart_row->id],
-                ['%s'],
-                ['%d']
-            );
-            
-            $this->log_info("✅ Mensaje #{$message_number} ENVIADO a {$cart_row->phone}");
-            
-            // 🆕 Registrar en tracking
-            $this->track_event($cart_row->id, $message_number, 'sent', [
-                'phone' => $cart_row->phone,
-                'coupon' => $coupon_data ? $coupon_data['code'] : ''
-            ]);
-            
-            return true;
+        $coupon_result = $coupon_manager->generate_coupon([
+            'discount_type'   => get_option("wse_pro_abandoned_cart_coupon_type_{$message_number}", 'percent'),
+            'discount_amount' => (float) get_option("wse_pro_abandoned_cart_coupon_amount_{$message_number}", 10),
+            'expiry_days'     => (int) get_option("wse_pro_abandoned_cart_coupon_expiry_{$message_number}", 7),
+            'customer_phone'  => $cart_row->phone,
+            'customer_email'  => $cart_row->billing_email,
+            'cart_id'         => $cart_row->id,
+            'message_number'  => $message_number,
+            'coupon_type'     => 'cart_recovery',
+            'prefix'          => $prefix
+        ]);
+
+        if (!is_wp_error($coupon_result) && !empty($coupon_result['coupon_code'])) {
+            $coupon_data = $coupon_result;
+            // FIX: Corregido el índice del array para el log.
+            $this->log_info("🎁 Cupón '{$coupon_result['coupon_code']}' generado para carrito #{$cart_row->id}");
         } else {
-            $error = isset($result['message']) ? $result['message'] : 'Error desconocido';
-            $this->log_error("❌ ERROR al enviar mensaje: {$error}");
-            return false;
+            $error_message = is_wp_error($coupon_result) ? $coupon_result->get_error_message() : 'Error desconocido al generar cupón.';
+            $this->log_error("❌ ERROR al generar cupón para Mensaje #{$message_number}: {$error_message}");
         }
     }
+
+    $message = WSE_Pro_Placeholders::replace_for_cart($template, $cart_row, $coupon_data);
+    $this->log_info("📝 Mensaje preparado para #{$cart_row->id}: \"" . substr($message, 0, 100) . "...\"");
+
+    $api_handler = new WSE_Pro_API_Handler();
+    $result = $api_handler->send_message($cart_row->phone, $message, $cart_row, 'customer');
+
+    if ($result && isset($result['success']) && $result['success']) {
+        $messages_sent = explode(',', $cart_row->messages_sent);
+        $messages_sent[$message_number - 1] = '1';
+        $new_messages_sent_string = implode(',', $messages_sent);
+
+        $wpdb->update(
+            self::$abandoned_cart_table_name,
+            ['messages_sent' => $new_messages_sent_string],
+            ['id' => $cart_row->id],
+            ['%s'],
+            ['%d']
+        );
+
+        $this->log_info("✅ Mensaje #{$message_number} ENVIADO a {$cart_row->phone} y marcado en la base de datos.");
+
+        $this->track_event($cart_row->id, $message_number, 'sent', [
+            'phone' => $cart_row->phone,
+            'coupon' => $coupon_data['coupon_code'] ?? ''
+        ]);
+        
+        return true;
+    } else {
+        $error = isset($result['message']) ? $result['message'] : 'Error desconocido de la API.';
+        $this->log_error("❌ ERROR al enviar Mensaje #{$message_number} a {$cart_row->phone}: {$error}");
+        return false;
+    }
+}
 
     /**
      * ========================================
@@ -1873,6 +1821,7 @@ public function send_review_thank_you_message($order) {
 
 // Inicializar el plugin
 WooWApp::get_instance();
+
 
 
 
