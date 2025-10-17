@@ -1073,31 +1073,60 @@ final class WooWApp {
             $this->log_info("Recuperación - ID: {$cart_row->id}, Restaurados: {$products_restored}, Fallidos: {$products_failed}");
 
             // Restaurar datos del cliente en WC_Customer
-            $customer = WC()->customer;
-            if ($customer) {
-                // Billing
-                if (!empty($cart_row->billing_first_name)) $customer->set_billing_first_name($cart_row->billing_first_name);
-                if (!empty($cart_row->billing_last_name)) $customer->set_billing_last_name($cart_row->billing_last_name);
-                if (!empty($cart_row->billing_email)) $customer->set_billing_email($cart_row->billing_email);
-                if (!empty($cart_row->billing_phone)) $customer->set_billing_phone($cart_row->billing_phone);
-                if (!empty($cart_row->billing_address_1)) $customer->set_billing_address_1($cart_row->billing_address_1);
-                if (!empty($cart_row->billing_city)) $customer->set_billing_city($cart_row->billing_city);
-                
-                // País PRIMERO, luego estado
-                if (!empty($cart_row->billing_country)) {
-                    $customer->set_billing_country($cart_row->billing_country);
-                    $this->log_info("País restaurado: {$cart_row->billing_country}");
-                }
-                
-                if (!empty($cart_row->billing_state)) {
-                    $customer->set_billing_state($cart_row->billing_state);
-                    $this->log_info("Estado restaurado: {$cart_row->billing_state}");
-                }
-                
-                if (!empty($cart_row->billing_postcode)) $customer->set_billing_postcode($cart_row->billing_postcode);
-                
-                // Guardar todo
-                $customer->save();
+$customer = WC()->customer;
+if ($customer) {
+    $this->log_info("Restaurando datos del cliente...");
+    
+    // Billing - NOMBRE Y APELLIDO PRIMERO
+    if (!empty($cart_row->billing_first_name)) {
+        $customer->set_billing_first_name($cart_row->billing_first_name);
+        $this->log_info("Nombre restaurado: {$cart_row->billing_first_name}");
+    }
+    
+    if (!empty($cart_row->billing_last_name)) {
+        $customer->set_billing_last_name($cart_row->billing_last_name);
+        $this->log_info("Apellido restaurado: {$cart_row->billing_last_name}");
+    }
+    
+    if (!empty($cart_row->billing_email)) {
+        $customer->set_billing_email($cart_row->billing_email);
+        $this->log_info("Email restaurado: {$cart_row->billing_email}");
+    }
+    
+    if (!empty($cart_row->billing_phone)) {
+        $customer->set_billing_phone($cart_row->billing_phone);
+        $this->log_info("Teléfono restaurado: {$cart_row->billing_phone}");
+    }
+    
+    if (!empty($cart_row->billing_address_1)) {
+        $customer->set_billing_address_1($cart_row->billing_address_1);
+        $this->log_info("Dirección restaurada: {$cart_row->billing_address_1}");
+    }
+    
+    if (!empty($cart_row->billing_city)) {
+        $customer->set_billing_city($cart_row->billing_city);
+        $this->log_info("Ciudad restaurada: {$cart_row->billing_city}");
+    }
+    
+    // País PRIMERO, luego estado
+    if (!empty($cart_row->billing_country)) {
+        $customer->set_billing_country($cart_row->billing_country);
+        $this->log_info("País restaurado: {$cart_row->billing_country}");
+    }
+    
+    if (!empty($cart_row->billing_state)) {
+        $customer->set_billing_state($cart_row->billing_state);
+        $this->log_info("Estado restaurado: {$cart_row->billing_state}");
+    }
+    
+    if (!empty($cart_row->billing_postcode)) {
+        $customer->set_billing_postcode($cart_row->billing_postcode);
+        $this->log_info("Código postal restaurado: {$cart_row->billing_postcode}");
+    }
+    
+    // Guardar todo
+    $customer->save();
+    $this->log_info("✅ Datos del cliente guardados");
                 
                 // Guardar también en sesión de WooCommerce
                 if (WC()->session) {
@@ -1792,4 +1821,5 @@ final class WooWApp {
 
 // Inicializar el plugin
 WooWApp::get_instance();
+
 
