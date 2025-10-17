@@ -507,21 +507,23 @@ final class WooWApp {
      */
 
     public function enqueue_frontend_scripts() {
-        if (is_checkout() && !is_wc_endpoint_url('order-received')) {
-            wp_enqueue_script(
-                'wse-pro-cart-capture',
-                WSE_PRO_URL . 'assets/js/cart-capture.js',
-                ['jquery'],
-                WSE_PRO_VERSION,
-                true
-            );
-            
-            wp_localize_script('wse-pro-cart-capture', 'wseProCapture', [
-                'ajax_url' => admin_url('admin-ajax.php'),
-                'nonce'    => wp_create_nonce('wse_pro_capture_cart_nonce')
-            ]);
-        }
+    // ✅ Enrolar SOLO cart-capture.js (no frontend.js)
+    if (is_checkout() && !is_wc_endpoint_url('order-received')) {
+        wp_enqueue_script(
+            'wse-pro-cart-capture',
+            WSE_PRO_URL . 'assets/js/cart-capture.js',
+            ['jquery'],
+            WSE_PRO_VERSION,
+            true
+        );
+        
+        wp_localize_script('wse-pro-cart-capture', 'wseProCapture', [
+            'ajax_url' => admin_url('admin-ajax.php'),
+            'nonce'    => wp_create_nonce('wse_pro_capture_cart_nonce'),
+            'debug'    => defined('WP_DEBUG') && WP_DEBUG // Para logs en consola
+        ]);
     }
+}
 
     public function capture_cart_via_ajax() {
         check_ajax_referer('wse_pro_capture_cart_nonce', 'nonce');
@@ -1793,6 +1795,7 @@ final class WooWApp {
 
 // Inicializar el plugin
 WooWApp::get_instance();
+
 
 
 
