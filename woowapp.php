@@ -574,6 +574,12 @@ public function init_classes() {
     $this->save_cart_to_database($billing_data);
     wp_send_json_success(['captured' => true]);
 }
+        /**
+ * 🆕 Cargar compatibilidad de servidor
+ */
+public function load_server_compatibility() {
+    require_once WSE_PRO_PATH . 'includes/class-wse-pro-server-compatibility.php';
+}
 
 /**
  * 🔍 Obtener datos de billing de MÚLTIPLES FUENTES
@@ -1858,6 +1864,7 @@ private function get_format_array($data) {
 
 // Inicializar el plugin
 WooWApp::get_instance();
+
 
 
 
