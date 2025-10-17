@@ -431,13 +431,14 @@ final class WooWApp {
     }
 
     public function includes() {
-        require_once WSE_PRO_PATH . 'includes/class-wse-pro-server-compatibility.php';
-        require_once WSE_PRO_PATH . 'includes/class-wse-pro-settings.php';
-        require_once WSE_PRO_PATH . 'includes/class-wse-pro-api-handler.php';
-        require_once WSE_PRO_PATH . 'includes/class-wse-pro-placeholders.php';
-        require_once WSE_PRO_PATH . 'includes/class-wse-pro-coupon-manager.php';
-        require_once WSE_PRO_PATH . 'includes/class-wse-pro-stats-dashboard.php';
-    }
+    require_once WSE_PRO_PATH . 'includes/class-wse-pro-field-detector.php';
+    require_once WSE_PRO_PATH . 'includes/class-wse-pro-server-compatibility.php';
+    require_once WSE_PRO_PATH . 'includes/class-wse-pro-settings.php';
+    require_once WSE_PRO_PATH . 'includes/class-wse-pro-api-handler.php';
+    require_once WSE_PRO_PATH . 'includes/class-wse-pro-placeholders.php';
+    require_once WSE_PRO_PATH . 'includes/class-wse-pro-coupon-manager.php';
+    require_once WSE_PRO_PATH . 'includes/class-wse-pro-stats-dashboard.php';
+}
 
     public function init_classes() {
         new WSE_Pro_Settings();
@@ -1843,3 +1844,4 @@ final class WooWApp {
 
 // Inicializar el plugin
 WooWApp::get_instance();
+
