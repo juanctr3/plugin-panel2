@@ -1,6 +1,6 @@
 /**
  * WooWApp - Sistema de Captura de Carrito Abandonado
- * Detección automática de campos - Compatible con todos los temas
+ * Detección automática de campos y formularios - 100% Universal
  * 
  * @package WooWApp
  * @version 2.2.2
@@ -43,6 +43,8 @@ jQuery(document).ready(function($) {
             '[data-field-name="billing_email"]',
             '[aria-label*="email"]',
             '[aria-label*="correo"]',
+            '[placeholder*="email"]',
+            '[placeholder*="correo"]',
         ],
         billing_phone: [
             '#billing_phone',
@@ -54,6 +56,10 @@ jQuery(document).ready(function($) {
             '[aria-label*="teléfono"]',
             '[aria-label*="phone"]',
             '[aria-label*="celular"]',
+            '[placeholder*="teléfono"]',
+            '[placeholder*="phone"]',
+            '[placeholder*="celular"]',
+            'input[type="tel"]',
         ],
         billing_first_name: [
             '#billing_first_name',
@@ -63,6 +69,8 @@ jQuery(document).ready(function($) {
             '[data-field-name="billing_first_name"]',
             '[aria-label*="nombre"]',
             '[aria-label*="first name"]',
+            '[placeholder*="nombre"]',
+            '[placeholder*="first name"]',
         ],
         billing_last_name: [
             '#billing_last_name',
@@ -72,6 +80,8 @@ jQuery(document).ready(function($) {
             '[data-field-name="billing_last_name"]',
             '[aria-label*="apellido"]',
             '[aria-label*="last name"]',
+            '[placeholder*="apellido"]',
+            '[placeholder*="last name"]',
         ],
         billing_address_1: [
             '#billing_address_1',
@@ -83,6 +93,9 @@ jQuery(document).ready(function($) {
             '[data-field-name="billing_address_1"]',
             '[aria-label*="dirección"]',
             '[aria-label*="address"]',
+            '[placeholder*="dirección"]',
+            '[placeholder*="address"]',
+            '[placeholder*="calle"]',
         ],
         billing_city: [
             '#billing_city',
@@ -92,6 +105,8 @@ jQuery(document).ready(function($) {
             '[data-field-name="billing_city"]',
             '[aria-label*="ciudad"]',
             '[aria-label*="city"]',
+            '[placeholder*="ciudad"]',
+            '[placeholder*="city"]',
         ],
         billing_state: [
             '#billing_state',
@@ -105,6 +120,8 @@ jQuery(document).ready(function($) {
             '[aria-label*="state"]',
             '[aria-label*="provincia"]',
             '[aria-label*="departamento"]',
+            '[placeholder*="estado"]',
+            '[placeholder*="state"]',
         ],
         billing_postcode: [
             '#billing_postcode',
@@ -115,6 +132,9 @@ jQuery(document).ready(function($) {
             '[aria-label*="código postal"]',
             '[aria-label*="postcode"]',
             '[aria-label*="zip"]',
+            '[placeholder*="código postal"]',
+            '[placeholder*="postcode"]',
+            '[placeholder*="zip"]',
         ],
         billing_country: [
             '#billing_country',
@@ -126,6 +146,8 @@ jQuery(document).ready(function($) {
             '[data-field-name="billing_country"]',
             '[aria-label*="país"]',
             '[aria-label*="country"]',
+            '[placeholder*="país"]',
+            '[placeholder*="country"]',
         ],
     };
 
@@ -147,11 +169,61 @@ jQuery(document).ready(function($) {
     }
 
     // ==========================================
-    // 🔍 FUNCIONES DE BÚSQUEDA DE CAMPOS
+    // 🔍 DETECCIÓN UNIVERSAL DE FORMULARIOS
     // ==========================================
 
     /**
-     * Encontrar elemento por múltiples selectores
+     * 🎯 Encontrar formulario de checkout - UNIVERSAL
+     * Intenta múltiples métodos de localización
+     */
+    function findCheckoutForm() {
+        // Lista de selectores a probar EN ORDEN DE CONFIABILIDAD
+        const formSelectors = [
+            // WooCommerce clásico
+            'form.checkout',
+            
+            // WooCommerce Blocks
+            'form.wc-block-checkout__form',
+            'form.wp-block-woocommerce-checkout-form',
+            
+            // Otros temas/plugins
+            'form.woocommerce-checkout',
+            'form[name="checkout"]',
+            '[data-checkout] form',
+            
+            // Contenedores genéricos
+            '[data-checkout]',
+            '.checkout-form',
+            '.checkout-container',
+            '.woocommerce-checkout',
+            
+            // Si nada de lo anterior funciona, buscar formulario con campos de billing
+            'form:has(input[name="billing_email"], input[name="billing_phone"])',
+            'div:has(input[name="billing_email"], input[name="billing_phone"])',
+        ];
+
+        for (let selector of formSelectors) {
+            try {
+                const $form = $(selector).first();
+                if ($form.length) {
+                    if (SERVER_CONFIG.debug) {
+                        console.log(`✅ Formulario encontrado con selector: ${selector}`);
+                    }
+                    return $form;
+                }
+            } catch (e) {
+                // Selector inválido, continuar
+            }
+        }
+
+        if (SERVER_CONFIG.debug) {
+            console.warn('⚠️  No se encontró formulario de checkout');
+        }
+        return null;
+    }
+
+    /**
+     * 🔍 Encontrar elemento por múltiples selectores
      * Intenta cada selector hasta encontrar el campo
      */
     function findField(fieldName) {
@@ -170,7 +242,8 @@ jQuery(document).ready(function($) {
             try {
                 const $el = $(selector).first();
                 
-                if ($el.length && $el.is(':visible')) {
+                // Verificar que el elemento existe y es visible
+                if ($el.length && ($el.is(':visible') || $el.attr('type') === 'hidden')) {
                     if (SERVER_CONFIG.debug) {
                         console.log(`✅ ${fieldName} encontrado con selector: ${selector}`);
                     }
@@ -178,9 +251,6 @@ jQuery(document).ready(function($) {
                 }
             } catch (e) {
                 // Selector CSS inválido, continuar con el siguiente
-                if (SERVER_CONFIG.debug) {
-                    console.warn(`⚠️  Selector inválido para ${fieldName}: ${selector}`);
-                }
             }
         }
 
@@ -307,7 +377,6 @@ jQuery(document).ready(function($) {
                         });
                     }
                     
-                    // No fallar, continuar intentando
                     resolve(false);
                 },
 
@@ -413,9 +482,6 @@ jQuery(document).ready(function($) {
                     listenersAttached++;
                 } catch (e) {
                     // Selector CSS inválido, ignorar
-                    if (SERVER_CONFIG.debug) {
-                        console.warn(`⚠️  Error adjuntando listener a: ${selector}`);
-                    }
                 }
             });
         });
@@ -429,13 +495,22 @@ jQuery(document).ready(function($) {
             window.captureDebounceTimer = setTimeout(captureAndSend, 1500);
         });
 
-        // Listener para actualizaciones de checkout (WooCommerce)
+        // Listener para actualizaciones de checkout (WooCommerce AJAX)
         $(document.body).off('updated_checkout').on('updated_checkout', function() {
             if (SERVER_CONFIG.debug) {
                 console.log('%c🔄 Evento: Checkout actualizado', 'color: #6366f1');
             }
             clearTimeout(window.captureDebounceTimer);
             window.captureDebounceTimer = setTimeout(captureAndSend, 2500);
+        });
+
+        // Listener para cambios en bloques (WooCommerce Blocks)
+        $(document.body).off('change').on('change', '[data-wc-on-change]', function() {
+            if (SERVER_CONFIG.debug) {
+                console.log('%c🔄 Evento: Bloque WooCommerce cambió', 'color: #6366f1');
+            }
+            clearTimeout(window.captureDebounceTimer);
+            window.captureDebounceTimer = setTimeout(captureAndSend, 2000);
         });
 
         if (SERVER_CONFIG.debug) {
@@ -451,12 +526,10 @@ jQuery(document).ready(function($) {
      * Inicializar el script
      */
     function init() {
-        // Buscar formulario de checkout (múltiples variantes)
-        const formCheckout = $('form.checkout');
-        const dataCheckout = $('[data-checkout]');
-        const formAny = $('form[name*="checkout"]');
+        // Buscar formulario de checkout (UNIVERSAL)
+        const $checkoutForm = findCheckoutForm();
 
-        if (formCheckout.length === 0 && dataCheckout.length === 0 && formAny.length === 0) {
+        if (!$checkoutForm || $checkoutForm.length === 0) {
             if (SERVER_CONFIG.debug) {
                 console.log('⏳ Formulario de checkout no encontrado aún. Esperando...');
             }
@@ -512,6 +585,17 @@ jQuery(document).ready(function($) {
             window.wseInitialized = true;
             if (SERVER_CONFIG.debug) {
                 console.log('%c🔄 Inicialización por evento updated_checkout', 'color: #6366f1');
+            }
+            init();
+        }
+    });
+
+    // Listener para Blocks
+    $(document.body).on('wc_blocks_loaded', function() {
+        if (!window.wseInitialized) {
+            window.wseInitialized = true;
+            if (SERVER_CONFIG.debug) {
+                console.log('%c🔄 Inicialización por evento wc_blocks_loaded', 'color: #6366f1');
             }
             init();
         }
