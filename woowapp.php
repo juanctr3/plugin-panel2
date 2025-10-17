@@ -18,17 +18,14 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-// Constantes del plugin
 define('WSE_PRO_VERSION', '2.2.2');
 define('WSE_PRO_DB_VERSION', '2.2.2');
 define('WSE_PRO_PATH', plugin_dir_path(__FILE__));
 define('WSE_PRO_URL', plugin_dir_url(__FILE__));
 
-// Hooks de activación y desactivación
 register_activation_hook(__FILE__, ['WooWApp', 'on_activation']);
 register_deactivation_hook(__FILE__, ['WooWApp', 'on_deactivation']);
 
-// Declarar compatibilidad con HPOS
 add_action('before_woocommerce_init', function () {
     if (class_exists(\Automattic\WooCommerce\Utilities\FeaturesUtil::class)) {
         \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility(
@@ -39,9 +36,6 @@ add_action('before_woocommerce_init', function () {
     }
 });
 
-/**
- * Clase principal del Plugin WooWApp
- */
 final class WooWApp {
 
     private static $instance;
@@ -60,25 +54,14 @@ final class WooWApp {
         self::$abandoned_cart_table_name = $wpdb->prefix . 'wse_pro_abandoned_carts';
         self::$tracking_table_name = $wpdb->prefix . 'wse_pro_tracking';
         
-        // 🆕 Cargar compatibilidad de servidor
         add_action('plugins_loaded', [$this, 'load_server_compatibility'], 1);
-        
         add_action('plugins_loaded', [$this, 'init']);
         add_action('plugins_loaded', [$this, 'maybe_upgrade_database'], 5);
     }
 
-    /**
-     * 🆕 Cargar compatibilidad de servidor
-     */
     public function load_server_compatibility() {
         require_once WSE_PRO_PATH . 'includes/class-wse-pro-field-detector.php';
     }
-
-    /**
-     * ========================================
-     * ACTIVACIÓN Y CONFIGURACIÓN INICIAL
-     * ========================================
-     */
 
     public static function on_activation() {
         self::create_database_tables();
@@ -103,7 +86,6 @@ final class WooWApp {
         $coupons_table = $wpdb->prefix . 'wse_pro_coupons_generated';
         $tracking_table = self::$tracking_table_name;
 
-        // TABLA DE CARRITOS ABANDONADOS
         $sql_carts = "CREATE TABLE IF NOT EXISTS $table_name (
             id BIGINT(20) NOT NULL AUTO_INCREMENT,
             user_id BIGINT(20) UNSIGNED NOT NULL DEFAULT 0,
@@ -137,7 +119,6 @@ final class WooWApp {
             KEY created_at (created_at)
         ) $charset_collate;";
 
-        // TABLA DE CUPONES
         $sql_coupons = "CREATE TABLE IF NOT EXISTS $coupons_table (
             id BIGINT(20) NOT NULL AUTO_INCREMENT,
             coupon_code VARCHAR(50) NOT NULL,
@@ -163,7 +144,6 @@ final class WooWApp {
             KEY expires_at (expires_at)
         ) $charset_collate;";
 
-        // TABLA DE TRACKING
         $sql_tracking = "CREATE TABLE IF NOT EXISTS $tracking_table (
             id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
             cart_id BIGINT(20) UNSIGNED NOT NULL,
@@ -186,7 +166,6 @@ final class WooWApp {
     public function maybe_upgrade_database() {
         $current_db_version = get_option('wse_pro_db_version', '0');
         
-        // SIEMPRE verificar integridad de la BD
         $this->verify_and_repair_database();
         
         if (version_compare($current_db_version, WSE_PRO_DB_VERSION, '<')) {
@@ -204,14 +183,10 @@ final class WooWApp {
         $this->ensure_cron_scheduled();
     }
     
-    /**
-     * Verifica y repara la estructura de BD automáticamente
-     */
     private function verify_and_repair_database() {
         global $wpdb;
         $table_name = self::$abandoned_cart_table_name;
         
-        // Verificar que la tabla existe
         $table_exists = $wpdb->get_var("SHOW TABLES LIKE '$table_name'") === $table_name;
         
         if (!$table_exists) {
@@ -219,11 +194,9 @@ final class WooWApp {
             return;
         }
         
-        // Obtener columnas actuales
         $columns = $wpdb->get_results("DESCRIBE $table_name");
         $column_names = array_column($columns, 'Field');
         
-        // Lista de columnas requeridas v2.2.2
         $required_columns = [
             'billing_first_name' => "VARCHAR(100) DEFAULT ''",
             'billing_last_name' => "VARCHAR(100) DEFAULT ''",
@@ -237,14 +210,12 @@ final class WooWApp {
             'messages_sent' => "VARCHAR(20) DEFAULT '0,0,0'",
         ];
         
-        // Agregar columnas faltantes
         foreach ($required_columns as $column => $definition) {
             if (!in_array($column, $column_names)) {
                 $wpdb->query("ALTER TABLE $table_name ADD COLUMN $column $definition");
             }
         }
         
-        // Eliminar columnas obsoletas
         $obsolete_columns = ['scheduled_time'];
         foreach ($obsolete_columns as $column) {
             if (in_array($column, $column_names)) {
@@ -252,7 +223,6 @@ final class WooWApp {
             }
         }
         
-        // Verificar tabla de tracking
         $tracking_exists = $wpdb->get_var("SHOW TABLES LIKE '" . self::$tracking_table_name . "'") === self::$tracking_table_name;
         if (!$tracking_exists) {
             self::create_database_tables();
@@ -273,7 +243,6 @@ final class WooWApp {
         $columns = $wpdb->get_results("DESCRIBE $table_name");
         $column_names = array_column($columns, 'Field');
         
-        // Agregar messages_sent
         if (!in_array('messages_sent', $column_names)) {
             $wpdb->query(
                 "ALTER TABLE $table_name 
@@ -288,7 +257,6 @@ final class WooWApp {
             );
         }
         
-        // Agregar campos de billing
         $billing_fields = [
             'billing_first_name' => "VARCHAR(100) DEFAULT '' AFTER checkout_data",
             'billing_last_name' => "VARCHAR(100) DEFAULT '' AFTER billing_first_name",
@@ -307,12 +275,10 @@ final class WooWApp {
             }
         }
         
-        // Eliminar columna obsoleta
         if (in_array('scheduled_time', $column_names)) {
             $wpdb->query("ALTER TABLE $table_name DROP COLUMN scheduled_time");
         }
         
-        // Agregar índices
         $indexes = $wpdb->get_results("SHOW INDEX FROM $table_name");
         $index_names = array_column($indexes, 'Key_name');
         
@@ -328,7 +294,6 @@ final class WooWApp {
             $wpdb->query("ALTER TABLE $table_name ADD KEY billing_email (billing_email)");
         }
         
-        // Crear tabla de tracking
         self::create_database_tables();
     }
 
@@ -386,12 +351,6 @@ final class WooWApp {
         }
     }
 
-    /**
-     * ========================================
-     * INICIALIZACIÓN DEL PLUGIN
-     * ========================================
-     */
-
     public function init() {
         if (!class_exists('WooCommerce')) {
             add_action('admin_notices', [$this, 'missing_wc_notice']);
@@ -435,7 +394,6 @@ final class WooWApp {
         WSE_Pro_Server_Compatibility::get_instance();
         WSE_Pro_Stats_Dashboard::get_instance();
         
-        // Agregar página de diagnóstico en admin
         if (is_admin()) {
             add_action('admin_menu', [$this, 'add_diagnostic_menu'], 99);
             add_action('admin_init', [$this, 'handle_diagnostic_actions']);
@@ -448,7 +406,6 @@ final class WooWApp {
             exit;
         }
 
-        // Notificaciones
         add_action('woocommerce_new_customer_note', [$this, 'trigger_new_note_notification'], 10, 1);
         
         foreach (array_keys(wc_get_order_statuses()) as $status) {
@@ -464,7 +421,6 @@ final class WooWApp {
         add_action('woocommerce_order_status_completed', [$this, 'schedule_review_reminder'], 10, 1);
         add_action('wse_pro_send_review_reminder_event', [$this, 'send_review_reminder_notification'], 10, 1);
         
-        // Carrito abandonado
         if ('yes' === get_option('wse_pro_enable_abandoned_cart', 'no')) {
             add_action('wp_enqueue_scripts', [$this, 'enqueue_frontend_scripts']);
             add_action('wp_ajax_wse_pro_capture_cart', [$this, 'capture_cart_via_ajax']);
@@ -478,29 +434,19 @@ final class WooWApp {
             add_filter('default_checkout_billing_state', [$this, 'default_billing_state'], 10, 1);
         }
 
-        // Tracking de conversiones
         add_action('woocommerce_order_status_completed', [$this, 'track_conversion'], 10, 1);
 
-        // Cupones
         add_action('wse_pro_cleanup_coupons', [WSE_Pro_Coupon_Manager::class, 'cleanup_expired_coupons']);
         add_action('woocommerce_checkout_order_processed', [WSE_Pro_Coupon_Manager::class, 'track_coupon_usage'], 10, 1);
         
-        // Reseñas
         add_shortcode('woowapp_review_form', [$this, 'render_review_form_shortcode']);
         add_filter('the_content', [$this, 'handle_custom_review_page_content']);
         add_filter('woocommerce_order_actions', [$this, 'add_manual_review_request_action']);
         add_action('woocommerce_order_action_wse_send_review_request', [$this, 'process_manual_review_request_action']);
     }
 
-    /**
-     * ========================================
-     * CAPTURA Y PROCESAMIENTO DE CARRITOS
-     * ========================================
-     */
-
     public function enqueue_frontend_scripts() {
         if (is_checkout() && !is_wc_endpoint_url('order-received')) {
-            // 🆕 Detectar server type
             $server_compat = WSE_Pro_Server_Compatibility::get_instance();
             $server_info = $server_compat->get_server_info();
             
@@ -518,7 +464,6 @@ final class WooWApp {
                 'debug'    => defined('WP_DEBUG') && WP_DEBUG
             ]);
 
-            // 🆕 Pasar info del servidor al HTML
             echo '<script>';
             echo 'document.documentElement.setAttribute("data-server-type", "' . esc_attr($server_info['server_type']) . '");';
             echo 'document.documentElement.setAttribute("data-wse-debug", "' . (defined('WP_DEBUG') && WP_DEBUG ? 'true' : 'false') . '");';
@@ -526,24 +471,18 @@ final class WooWApp {
         }
     }
 
-    /**
-     * 🔧 CAPTURA DE CARRITO - VERSIÓN CORREGIDA v2.2.2
-     */
     public function capture_cart_via_ajax() {
         try {
-            // 🔍 Verificar nonce (pero no fallar si no está presente)
             if (isset($_POST['nonce'])) {
                 check_ajax_referer('wse_pro_capture_cart_nonce', 'nonce', false);
             }
             
-            // 🔍 Verificar WooCommerce
             if (!function_exists('WC') || !WC()->cart) {
                 $this->log_error('WooCommerce no disponible en capture_cart_via_ajax');
                 wp_send_json_success(['captured' => false, 'error' => 'WooCommerce unavailable']);
                 return;
             }
 
-            // 🔍 Obtener datos de billing DIRECTAMENTE del POST
             $billing_data = [
                 'billing_email'      => isset($_POST['billing_email']) ? sanitize_email($_POST['billing_email']) : '',
                 'billing_phone'      => isset($_POST['billing_phone']) ? sanitize_text_field($_POST['billing_phone']) : '',
@@ -556,14 +495,12 @@ final class WooWApp {
                 'billing_country'    => isset($_POST['billing_country']) ? sanitize_text_field($_POST['billing_country']) : '',
             ];
 
-            // 🔍 Validar que tengamos al menos email O teléfono
             if (empty($billing_data['billing_email']) && empty($billing_data['billing_phone'])) {
                 $this->log_info('Sin email ni teléfono - no capturar');
                 wp_send_json_success(['captured' => false]);
                 return;
             }
 
-            // 🔍 Verificar carrito
             $cart = WC()->cart;
             if (!$cart || $cart->is_empty()) {
                 $this->log_info('Carrito vacío - no capturar');
@@ -571,7 +508,6 @@ final class WooWApp {
                 return;
             }
 
-            // 🔍 Guardar en BD
             $saved = $this->save_cart_to_database_safe($billing_data);
             
             if ($saved) {
@@ -591,9 +527,6 @@ final class WooWApp {
         }
     }
 
-    /**
-     * 🔧 Guardar carrito de forma SEGURA y UNIVERSAL
-     */
     private function save_cart_to_database_safe($billing_data) {
         try {
             global $wpdb;
@@ -602,7 +535,6 @@ final class WooWApp {
             $user_id = get_current_user_id();
             $cart = WC()->cart;
             
-            // Preparar datos del carrito
             $cart_data = [
                 'user_id' => $user_id,
                 'session_id' => $session_id,
@@ -626,7 +558,6 @@ final class WooWApp {
                 'billing_country' => $billing_data['billing_country'],
             ];
             
-            // Preparar formatos
             $format = [];
             foreach ($cart_data as $value) {
                 if (is_int($value)) {
@@ -638,7 +569,6 @@ final class WooWApp {
                 }
             }
             
-            // Insertar
             $result = $wpdb->insert(
                 $wpdb->prefix . 'wse_pro_abandoned_carts',
                 $cart_data,
@@ -651,7 +581,7 @@ final class WooWApp {
             }
             
             $cart_id = $wpdb->insert_id;
-            $this->log_info("✅ Carrito guardado - ID: {$cart_id}, Phone: " . $billing_data['billing_phone'] . ", Email: " . $billing_data['billing_email'] . ", Nombre: " . $billing_data['billing_first_name']);
+            $this->log_info("✅ Carrito guardado - ID: {$cart_id}, Nombre: {$billing_data['billing_first_name']}, Apellido: {$billing_data['billing_last_name']}, Phone: {$billing_data['billing_phone']}, Email: {$billing_data['billing_email']}");
             
             return true;
             
@@ -661,15 +591,11 @@ final class WooWApp {
         }
     }
 
-    /**
-     * 🔧 PROCESAMIENTO DE CARRITOS - VERSIÓN CORREGIDA v2.2.2
-     */
     public function process_abandoned_carts_cron() {
         global $wpdb;
         
         $this->log_info('=== INICIANDO PROCESAMIENTO DE CARRITOS ===');
         
-        // Obtener carritos activos
         $active_carts = $wpdb->get_results(
             "SELECT * FROM " . self::$abandoned_cart_table_name . " 
              WHERE status = 'active' 
@@ -690,9 +616,6 @@ final class WooWApp {
         $this->log_info('=== PROCESAMIENTO COMPLETADO ===');
     }
 
-    /**
-     * 🔧 PROCESAR CARRITO INDIVIDUAL - VERSIÓN CORREGIDA
-     */
     private function process_single_cart($cart) {
         $cart_id = $cart->id;
         $created_at = strtotime($cart->created_at);
@@ -701,9 +624,7 @@ final class WooWApp {
         
         $this->log_info("Procesando carrito #{$cart_id} - {$minutes_elapsed} minutos desde creación");
         
-        // Verificar cada mensaje (1, 2, 3)
         for ($i = 1; $i <= 3; $i++) {
-            // ✅ FIX: Usar el nombre correcto de las opciones
             $message_enabled = get_option("wse_pro_abandoned_cart_enable_msg_{$i}", 'no');
             $message_delay = (int) get_option("wse_pro_abandoned_cart_time_{$i}", 60);
             $message_unit = get_option("wse_pro_abandoned_cart_unit_{$i}", 'minutes');
@@ -713,7 +634,6 @@ final class WooWApp {
                 continue;
             }
             
-            // Calcular delay en minutos
             $delay_in_minutes = $message_delay;
             if ($message_unit === 'hours') {
                 $delay_in_minutes = $message_delay * 60;
@@ -721,9 +641,7 @@ final class WooWApp {
                 $delay_in_minutes = $message_delay * 1440;
             }
             
-            // Verificar si es momento de enviar
             if ($minutes_elapsed >= $delay_in_minutes) {
-                // Verificar si ya se envió
                 $messages_sent = explode(',', $cart->messages_sent);
                 $already_sent = isset($messages_sent[$i - 1]) && $messages_sent[$i - 1] == '1';
                 
@@ -741,237 +659,134 @@ final class WooWApp {
         }
     }
 
-    /**
-     * 🔧 ENVIAR MENSAJE - VERSIÓN COMPLETAMENTE REESCRITA v2.2.2
-     */
     private function send_abandoned_cart_message($cart_row, $message_number) {
-    global $wpdb;
-    
-    try {
-        $this->log_info("📤 Iniciando envío mensaje #{$message_number} para carrito #{$cart_row->id}");
+        global $wpdb;
         
-        // 1. Obtener carrito ACTUALIZADO de BD (no del cache)
-        $current_cart = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM " . self::$abandoned_cart_table_name . " WHERE id = %d",
-            $cart_row->id
-        ));
-        
-        if (!$current_cart) {
-            $this->log_warning("Carrito no encontrado: {$cart_row->id}");
-            return false;
-        }
-        
-        // 2. Validar estado del carrito
-        if ($current_cart->status !== 'active') {
-            $this->log_warning("⚠️ Carrito #{$current_cart->id} no está activo (status: {$current_cart->status})");
-            return false;
-        }
-        
-        // 3. Verificar que el mensaje NO se haya enviado (VERIFICACIÓN TRIPLE)
-        $messages_sent = explode(',', $current_cart->messages_sent);
-        
-        if (isset($messages_sent[$message_number - 1])) {
-            if ($messages_sent[$message_number - 1] == '1') {
-                $this->log_warning("⚠️ Mensaje #{$message_number} YA fue enviado - Saltando");
+        try {
+            $this->log_info("📤 Iniciando envío mensaje #{$message_number} para carrito #{$cart_row->id}");
+            
+            $current_cart = $wpdb->get_row($wpdb->prepare(
+                "SELECT * FROM " . self::$abandoned_cart_table_name . " WHERE id = %d",
+                $cart_row->id
+            ));
+            
+            if (!$current_cart) {
+                $this->log_warning("Carrito no encontrado: {$cart_row->id}");
                 return false;
             }
-        }
-        
-        // 4. Obtener plantilla
-        $template = get_option('wse_pro_abandoned_cart_message_' . $message_number);
-        if (empty($template)) {
-            $this->log_error("❌ Plantilla mensaje #{$message_number} vacía");
-            return false;
-        }
-        
-        // 5. Generar cupón si está habilitado
-        $coupon_data = null;
-        $coupon_enabled = get_option("wse_pro_abandoned_cart_coupon_enable_{$message_number}", 'no');
-        
-        if ($coupon_enabled === 'yes') {
-            $coupon_manager = WSE_Pro_Coupon_Manager::get_instance();
             
-            $prefix = get_option(
-                "wse_pro_abandoned_cart_coupon_prefix_{$message_number}",
-                'woowapp-m' . $message_number
-            );
-            
-            $coupon_result = $coupon_manager->generate_coupon([
-                'discount_type'   => get_option("wse_pro_abandoned_cart_coupon_type_{$message_number}", 'percent'),
-                'discount_amount' => (float) get_option("wse_pro_abandoned_cart_coupon_amount_{$message_number}", 10),
-                'expiry_days'     => (int) get_option("wse_pro_abandoned_cart_coupon_expiry_{$message_number}", 7),
-                'customer_phone'  => $current_cart->phone,
-                'customer_email'  => $current_cart->billing_email,
-                'cart_id'         => $current_cart->id,
-                'message_number'  => $message_number,
-                'coupon_type'     => 'cart_recovery',
-                'prefix'          => $prefix
-            ]);
-            
-            if (!is_wp_error($coupon_result)) {
-                $coupon_data = $coupon_result;
-                $this->log_info("🎁 Cupón generado: {$coupon_result['code']}");
+            if ($current_cart->status !== 'active') {
+                $this->log_warning("⚠️ Carrito #{$current_cart->id} no está activo (status: {$current_cart->status})");
+                return false;
             }
-        }
-        
-        // 6. Reemplazar placeholders
-        $message = WSE_Pro_Placeholders::replace_for_cart($template, $current_cart, $coupon_data);
-        
-        $this->log_info("📝 Mensaje preparado: " . substr($message, 0, 100) . "...");
-        
-        // 7. MARCAR COMO ENVIANDO ANTES de enviar (para evitar duplicados)
-        $messages_sent[$message_number - 1] = '1';
-        $new_messages_sent = implode(',', $messages_sent);
-        
-        $update_result = $wpdb->update(
-            self::$abandoned_cart_table_name,
-            ['messages_sent' => $new_messages_sent],
-            ['id' => $current_cart->id],
-            ['%s'],
-            ['%d']
-        );
-        
-        if ($update_result === false) {
-            $this->log_error("❌ Error al marcar mensaje como enviado: " . $wpdb->last_error);
-            return false;
-        }
-        
-        $this->log_info("✅ Mensaje #{$message_number} marcado como enviado en BD");
-        
-        // 8. Crear objeto para API
-        $cart_obj = (object)[
-            'id' => $current_cart->id,
-            'phone' => $current_cart->phone,
-            'cart_contents' => $current_cart->cart_contents
-        ];
-        
-        // 9. Enviar mensaje
-        $api_handler = new WSE_Pro_API_Handler();
-        $result = $api_handler->send_message($current_cart->phone, $message, $cart_obj, 'customer');
-        
-        // 10. Procesar resultado
-        if ($result['success']) {
-            $this->log_info("✅ Mensaje #{$message_number} ENVIADO a {$current_cart->phone}");
             
-            // Registrar en tracking
-            $this->track_event($current_cart->id, $message_number, 'sent', [
-                'phone' => $current_cart->phone,
-                'coupon' => $coupon_data ? $coupon_data['code'] : '',
-                'message_text' => substr($message, 0, 100)
-            ]);
+            $messages_sent = explode(',', $current_cart->messages_sent);
             
-            return true;
-        } else {
-            $error = isset($result['message']) ? $result['message'] : 'Error desconocido';
-            $this->log_error("❌ ERROR al enviar mensaje: {$error}");
+            if (isset($messages_sent[$message_number - 1])) {
+                if ($messages_sent[$message_number - 1] == '1') {
+                    $this->log_warning("⚠️ Mensaje #{$message_number} YA fue enviado - Saltando");
+                    return false;
+                }
+            }
             
-            // 🔧 REVERTIR: Si no se envía, marcar como NO enviado
-            $messages_sent[$message_number - 1] = '0';
-            $wpdb->update(
+            $template = get_option('wse_pro_abandoned_cart_message_' . $message_number);
+            if (empty($template)) {
+                $this->log_error("❌ Plantilla mensaje #{$message_number} vacía");
+                return false;
+            }
+            
+            $coupon_data = null;
+            $coupon_enabled = get_option("wse_pro_abandoned_cart_coupon_enable_{$message_number}", 'no');
+            
+            if ($coupon_enabled === 'yes') {
+                $coupon_manager = WSE_Pro_Coupon_Manager::get_instance();
+                
+                $prefix = get_option(
+                    "wse_pro_abandoned_cart_coupon_prefix_{$message_number}",
+                    'woowapp-m' . $message_number
+                );
+                
+                $coupon_result = $coupon_manager->generate_coupon([
+                    'discount_type'   => get_option("wse_pro_abandoned_cart_coupon_type_{$message_number}", 'percent'),
+                    'discount_amount' => (float) get_option("wse_pro_abandoned_cart_coupon_amount_{$message_number}", 10),
+                    'expiry_days'     => (int) get_option("wse_pro_abandoned_cart_coupon_expiry_{$message_number}", 7),
+                    'customer_phone'  => $current_cart->phone,
+                    'customer_email'  => $current_cart->billing_email,
+                    'cart_id'         => $current_cart->id,
+                    'message_number'  => $message_number,
+                    'coupon_type'     => 'cart_recovery',
+                    'prefix'          => $prefix
+                ]);
+                
+                if (!is_wp_error($coupon_result)) {
+                    $coupon_data = $coupon_result;
+                    $this->log_info("🎁 Cupón generado: {$coupon_result['code']}");
+                }
+            }
+            
+            $message = WSE_Pro_Placeholders::replace_for_cart($template, $current_cart, $coupon_data);
+            
+            $this->log_info("📝 Mensaje preparado: " . substr($message, 0, 100) . "...");
+            
+            $messages_sent[$message_number - 1] = '1';
+            $new_messages_sent = implode(',', $messages_sent);
+            
+            $update_result = $wpdb->update(
                 self::$abandoned_cart_table_name,
-                ['messages_sent' => implode(',', $messages_sent)],
+                ['messages_sent' => $new_messages_sent],
                 ['id' => $current_cart->id],
                 ['%s'],
                 ['%d']
             );
             
-            $this->log_warning("⚠️ Mensaje revertido a no enviado por error en API");
-            return false;
-        }
-        
-    } catch (Exception $e) {
-        $this->log_error('Excepción en send_abandoned_cart_message: ' . $e->getMessage());
-        return false;
-    }
-}
-        
-        // 3. Obtener plantilla
-        $template = get_option('wse_pro_abandoned_cart_message_' . $message_number);
-        if (empty($template)) {
-            $this->log_error("❌ ERROR: Plantilla mensaje #{$message_number} vacía");
-            return false;
-        }
-        
-        // 4. Generar cupón si está habilitado
-        $coupon_data = null;
-        $coupon_enabled = get_option("wse_pro_abandoned_cart_coupon_enable_{$message_number}", 'no');
-        
-        if ($coupon_enabled === 'yes') {
-            $coupon_manager = WSE_Pro_Coupon_Manager::get_instance();
-            
-            $prefix = get_option(
-                "wse_pro_abandoned_cart_coupon_prefix_{$message_number}",
-                'woowapp-m' . $message_number
-            );
-            
-            $coupon_result = $coupon_manager->generate_coupon([
-                'discount_type'   => get_option("wse_pro_abandoned_cart_coupon_type_{$message_number}", 'percent'),
-                'discount_amount' => (float) get_option("wse_pro_abandoned_cart_coupon_amount_{$message_number}", 10),
-                'expiry_days'     => (int) get_option("wse_pro_abandoned_cart_coupon_expiry_{$message_number}", 7),
-                'customer_phone'  => $cart_row->phone,
-                'customer_email'  => $cart_row->billing_email,
-                'cart_id'         => $cart_row->id,
-                'message_number'  => $message_number,
-                'coupon_type'     => 'cart_recovery',
-                'prefix'          => $prefix
-            ]);
-            
-            if (!is_wp_error($coupon_result)) {
-                $coupon_data = $coupon_result;
-                $this->log_info("🎁 Cupón generado: {$coupon_result['code']}");
+            if ($update_result === false) {
+                $this->log_error("❌ Error al marcar mensaje como enviado: " . $wpdb->last_error);
+                return false;
             }
-        }
-        
-        // 5. Reemplazar placeholders
-        $message = WSE_Pro_Placeholders::replace_for_cart($template, $cart_row, $coupon_data);
-        
-        $this->log_info("📝 Mensaje preparado: " . substr($message, 0, 100) . "...");
-        
-        // 6. Crear objeto para API
-        $cart_obj = (object)[
-            'id' => $cart_row->id,
-            'phone' => $cart_row->phone,
-            'cart_contents' => $cart_row->cart_contents
-        ];
-        
-        // 7. Enviar mensaje
-        $api_handler = new WSE_Pro_API_Handler();
-        $result = $api_handler->send_message($cart_row->phone, $message, $cart_obj, 'customer');
-        
-        // 8. Procesar resultado
-        if ($result['success']) {
-            // Actualizar estado en BD
-            $messages_sent[$message_number - 1] = '1';
             
-            $wpdb->update(
-                self::$abandoned_cart_table_name,
-                ['messages_sent' => implode(',', $messages_sent)],
-                ['id' => $cart_row->id],
-                ['%s'],
-                ['%d']
-            );
+            $this->log_info("✅ Mensaje #{$message_number} marcado como enviado en BD");
             
-            $this->log_info("✅ Mensaje #{$message_number} ENVIADO a {$cart_row->phone}");
+            $cart_obj = (object)[
+                'id' => $current_cart->id,
+                'phone' => $current_cart->phone,
+                'cart_contents' => $current_cart->cart_contents
+            ];
             
-            // Registrar en tracking
-            $this->track_event($cart_row->id, $message_number, 'sent', [
-                'phone' => $cart_row->phone,
-                'coupon' => $coupon_data ? $coupon_data['code'] : ''
-            ]);
+            $api_handler = new WSE_Pro_API_Handler();
+            $result = $api_handler->send_message($current_cart->phone, $message, $cart_obj, 'customer');
             
-            return true;
-        } else {
-            $error = isset($result['message']) ? $result['message'] : 'Error desconocido';
-            $this->log_error("❌ ERROR al enviar mensaje: {$error}");
+            if ($result['success']) {
+                $this->log_info("✅ Mensaje #{$message_number} ENVIADO a {$current_cart->phone}");
+                
+                $this->track_event($current_cart->id, $message_number, 'sent', [
+                    'phone' => $current_cart->phone,
+                    'coupon' => $coupon_data ? $coupon_data['code'] : '',
+                    'message_text' => substr($message, 0, 100)
+                ]);
+                
+                return true;
+            } else {
+                $error = isset($result['message']) ? $result['message'] : 'Error desconocido';
+                $this->log_error("❌ ERROR al enviar mensaje: {$error}");
+                
+                $messages_sent[$message_number - 1] = '0';
+                $wpdb->update(
+                    self::$abandoned_cart_table_name,
+                    ['messages_sent' => implode(',', $messages_sent)],
+                    ['id' => $current_cart->id],
+                    ['%s'],
+                    ['%d']
+                );
+                
+                $this->log_warning("⚠️ Mensaje revertido a no enviado por error en API");
+                return false;
+            }
+            
+        } catch (Exception $e) {
+            $this->log_error('Excepción en send_abandoned_cart_message: ' . $e->getMessage());
             return false;
         }
     }
-
-    /**
-     * ========================================
-     * RECUPERACIÓN DE CARRITO
-     * ========================================
-     */
 
     public function handle_cart_recovery_link() {
         if (!isset($_GET['recover-cart-wse'])) {
@@ -1005,10 +820,8 @@ final class WooWApp {
                 exit();
             }
 
-            // Registrar click
             $this->track_event($cart_row->id, 0, 'click', []);
             
-            // Marcar en sesión que viene de recuperación
             WC()->session->set('wse_recovering_cart', [
                 'cart_id' => $cart_row->id,
                 'timestamp' => current_time('timestamp'),
@@ -1072,63 +885,58 @@ final class WooWApp {
 
             $this->log_info("Recuperación - ID: {$cart_row->id}, Restaurados: {$products_restored}, Fallidos: {$products_failed}");
 
-            // Restaurar datos del cliente en WC_Customer
-$customer = WC()->customer;
-if ($customer) {
-    $this->log_info("Restaurando datos del cliente...");
-    
-    // Billing - NOMBRE Y APELLIDO PRIMERO
-    if (!empty($cart_row->billing_first_name)) {
-        $customer->set_billing_first_name($cart_row->billing_first_name);
-        $this->log_info("Nombre restaurado: {$cart_row->billing_first_name}");
-    }
-    
-    if (!empty($cart_row->billing_last_name)) {
-        $customer->set_billing_last_name($cart_row->billing_last_name);
-        $this->log_info("Apellido restaurado: {$cart_row->billing_last_name}");
-    }
-    
-    if (!empty($cart_row->billing_email)) {
-        $customer->set_billing_email($cart_row->billing_email);
-        $this->log_info("Email restaurado: {$cart_row->billing_email}");
-    }
-    
-    if (!empty($cart_row->billing_phone)) {
-        $customer->set_billing_phone($cart_row->billing_phone);
-        $this->log_info("Teléfono restaurado: {$cart_row->billing_phone}");
-    }
-    
-    if (!empty($cart_row->billing_address_1)) {
-        $customer->set_billing_address_1($cart_row->billing_address_1);
-        $this->log_info("Dirección restaurada: {$cart_row->billing_address_1}");
-    }
-    
-    if (!empty($cart_row->billing_city)) {
-        $customer->set_billing_city($cart_row->billing_city);
-        $this->log_info("Ciudad restaurada: {$cart_row->billing_city}");
-    }
-    
-    // País PRIMERO, luego estado
-    if (!empty($cart_row->billing_country)) {
-        $customer->set_billing_country($cart_row->billing_country);
-        $this->log_info("País restaurado: {$cart_row->billing_country}");
-    }
-    
-    if (!empty($cart_row->billing_state)) {
-        $customer->set_billing_state($cart_row->billing_state);
-        $this->log_info("Estado restaurado: {$cart_row->billing_state}");
-    }
-    
-    if (!empty($cart_row->billing_postcode)) {
-        $customer->set_billing_postcode($cart_row->billing_postcode);
-        $this->log_info("Código postal restaurado: {$cart_row->billing_postcode}");
-    }
-    
-    // Guardar todo
-    $customer->save();
-    $this->log_info("✅ Datos del cliente guardados");
+            $customer = WC()->customer;
+            if ($customer) {
+                $this->log_info("Restaurando datos del cliente...");
                 
-                // Guardar también en sesión de WooCommerce
+                if (!empty($cart_row->billing_first_name)) {
+                    $customer->set_billing_first_name($cart_row->billing_first_name);
+                    $this->log_info("Nombre restaurado: {$cart_row->billing_first_name}");
+                }
+                
+                if (!empty($cart_row->billing_last_name)) {
+                    $customer->set_billing_last_name($cart_row->billing_last_name);
+                    $this->log_info("Apellido restaurado: {$cart_row->billing_last_name}");
+                }
+                
+                if (!empty($cart_row->billing_email)) {
+                    $customer->set_billing_email($cart_row->billing_email);
+                    $this->log_info("Email restaurado: {$cart_row->billing_email}");
+                }
+                
+                if (!empty($cart_row->billing_phone)) {
+                    $customer->set_billing_phone($cart_row->billing_phone);
+                    $this->log_info("Teléfono restaurado: {$cart_row->billing_phone}");
+                }
+                
+                if (!empty($cart_row->billing_address_1)) {
+                    $customer->set_billing_address_1($cart_row->billing_address_1);
+                    $this->log_info("Dirección restaurada: {$cart_row->billing_address_1}");
+                }
+                
+                if (!empty($cart_row->billing_city)) {
+                    $customer->set_billing_city($cart_row->billing_city);
+                    $this->log_info("Ciudad restaurada: {$cart_row->billing_city}");
+                }
+                
+                if (!empty($cart_row->billing_country)) {
+                    $customer->set_billing_country($cart_row->billing_country);
+                    $this->log_info("País restaurado: {$cart_row->billing_country}");
+                }
+                
+                if (!empty($cart_row->billing_state)) {
+                    $customer->set_billing_state($cart_row->billing_state);
+                    $this->log_info("Estado restaurado: {$cart_row->billing_state}");
+                }
+                
+                if (!empty($cart_row->billing_postcode)) {
+                    $customer->set_billing_postcode($cart_row->billing_postcode);
+                    $this->log_info("Código postal restaurado: {$cart_row->billing_postcode}");
+                }
+                
+                $customer->save();
+                $this->log_info("✅ Datos del cliente guardados");
+                
                 if (WC()->session) {
                     $checkout_fields = [
                         'billing_first_name' => $cart_row->billing_first_name,
@@ -1142,18 +950,16 @@ if ($customer) {
                         'billing_postcode' => $cart_row->billing_postcode,
                     ];
                     
-                    // Filtrar valores vacíos
                     $checkout_fields = array_filter($checkout_fields, function($value) {
                         return !empty($value);
                     });
                     
                     WC()->session->set('wse_prefill_checkout_fields', $checkout_fields);
                     
-                    $this->log_info("Datos guardados en sesión WC - País: " . ($cart_row->billing_country ?? 'no definido'));
+                    $this->log_info("Datos guardados en sesión WC");
                 }
             }
 
-            // Aplicar cupón
             try {
                 $coupon_manager = WSE_Pro_Coupon_Manager::get_instance();
                 $coupon = $coupon_manager->get_latest_coupon_for_cart($cart_row->id);
@@ -1283,12 +1089,6 @@ if ($customer) {
         }
     }
 
-    /**
-     * ========================================
-     * 🆕 SISTEMA DE TRACKING
-     * ========================================
-     */
-
     private function track_event($cart_id, $message_number, $event_type, $event_data = []) {
         global $wpdb;
         
@@ -1316,7 +1116,6 @@ if ($customer) {
         
         global $wpdb;
         
-        // Buscar carrito abandonado asociado
         $cart = $wpdb->get_row($wpdb->prepare(
             "SELECT * FROM " . self::$abandoned_cart_table_name . "
             WHERE phone = %s AND status = 'active'
@@ -1325,14 +1124,12 @@ if ($customer) {
         ));
         
         if ($cart) {
-            // Registrar conversión
             $this->track_event($cart->id, 0, 'conversion', [
                 'order_id' => $order_id,
                 'order_total' => $order->get_total(),
                 'phone' => $phone
             ]);
             
-            // Marcar carrito como recuperado
             $wpdb->update(
                 self::$abandoned_cart_table_name,
                 ['status' => 'recovered'],
@@ -1345,12 +1142,6 @@ if ($customer) {
         }
     }
 
-    /**
-     * ========================================
-     * NOTIFICACIONES DE PEDIDOS
-     * ========================================
-     */
-
     public function trigger_status_change_notification($order_id, $order) {
         $api_handler = new WSE_Pro_API_Handler();
         $api_handler->handle_status_change($order_id, $order);
@@ -1360,12 +1151,6 @@ if ($customer) {
         $api_handler = new WSE_Pro_API_Handler();
         $api_handler->handle_new_note($data);
     }
-
-    /**
-     * ========================================
-     * RECORDATORIOS DE RESEÑAS
-     * ========================================
-     */
 
     public function schedule_review_reminder($order_id) {
         wp_clear_scheduled_hook('wse_pro_send_review_reminder_event', [$order_id]);
@@ -1546,12 +1331,6 @@ if ($customer) {
         }
     }
 
-    /**
-     * ========================================
-     * UTILIDADES Y LOGGING
-     * ========================================
-     */
-    
     public function add_diagnostic_menu() {
         add_submenu_page(
             'woocommerce',
@@ -1576,120 +1355,12 @@ if ($customer) {
             </div>
             <?php endif; ?>
             
-            <!-- Información del Plugin -->
-            <div class="card" style="margin-top:20px;">
-                <h2>📦 Información del Plugin</h2>
-                <table class="widefat">
-                    <tr>
-                        <th>Versión Plugin</th>
-                        <td><?php echo WSE_PRO_VERSION; ?></td>
-                        <td><?php echo WSE_PRO_VERSION === '2.2.2' ? '✅' : '❌'; ?></td>
-                    </tr>
-                    <tr>
-                        <th>Versión BD</th>
-                        <td><?php echo get_option('wse_pro_db_version', '0'); ?></td>
-                        <td><?php echo get_option('wse_pro_db_version') === '2.2.2' ? '✅' : '⚠️'; ?></td>
-                    </tr>
-                </table>
-            </div>
-            
-            <!-- Estructura de Base de Datos -->
-            <div class="card" style="margin-top:20px;">
-                <h2>🗄️ Estructura de Base de Datos</h2>
-                <?php
-                $table = self::$abandoned_cart_table_name;
-                $table_exists = $wpdb->get_var("SHOW TABLES LIKE '$table'") === $table;
-                
-                if ($table_exists) {
-                    $columns = $wpdb->get_results("DESCRIBE $table");
-                    $column_names = array_column($columns, 'Field');
-                    
-                    $required = [
-                        'id', 'session_id', 'phone', 'cart_contents', 'cart_total',
-                        'billing_first_name', 'billing_last_name', 'billing_email', 'billing_phone',
-                        'billing_address_1', 'billing_city', 'billing_state', 'billing_postcode', 'billing_country',
-                        'status', 'messages_sent', 'created_at', 'updated_at', 'recovery_token'
-                    ];
-                    
-                    $missing = array_diff($required, $column_names);
-                    $obsolete = array_intersect(['scheduled_time'], $column_names);
-                    ?>
-                    
-                    <table class="widefat">
-                        <tr>
-                            <th>Tabla Carritos</th>
-                            <td><?php echo count($column_names); ?> columnas</td>
-                            <td><?php echo empty($missing) ? '✅' : '❌'; ?></td>
-                        </tr>
-                        <?php if (!empty($missing)): ?>
-                        <tr>
-                            <th>Columnas Faltantes</th>
-                            <td colspan="2" style="color:#ef4444;">
-                                <?php echo implode(', ', $missing); ?>
-                            </td>
-                        </tr>
-                        <?php endif; ?>
-                        <?php if (!empty($obsolete)): ?>
-                        <tr>
-                            <th>Columnas Obsoletas</th>
-                            <td colspan="2" style="color:#f59e0b;">
-                                <?php echo implode(', ', $obsolete); ?>
-                            </td>
-                        </tr>
-                        <?php endif; ?>
-                    </table>
-                    
-                    <?php
-                    $tracking_exists = $wpdb->get_var("SHOW TABLES LIKE '" . self::$tracking_table_name . "'") === self::$tracking_table_name;
-                    ?>
-                    <table class="widefat" style="margin-top:10px;">
-                        <tr>
-                            <th>Tabla Tracking</th>
-                            <td><?php echo $tracking_exists ? 'Existe' : 'No existe'; ?></td>
-                            <td><?php echo $tracking_exists ? '✅' : '❌'; ?></td>
-                        </tr>
-                    </table>
-                    
-                    <?php if (!empty($missing) || !empty($obsolete) || !$tracking_exists): ?>
-                    <div style="margin-top:20px;">
-                        <form method="post" action="">
-                            <?php wp_nonce_field('woowapp_repair', 'woowapp_repair_nonce'); ?>
-                            <input type="hidden" name="action" value="repair_database">
-                            <button type="submit" class="button button-primary button-large">
-                                🔧 Reparar Base de Datos
-                            </button>
-                        </form>
-                    </div>
-                    <?php endif; ?>
-                    
-                <?php } else { ?>
-                    <p style="color:#ef4444;">❌ La tabla de carritos no existe.</p>
-                    <form method="post" action="">
-                        <?php wp_nonce_field('woowapp_repair', 'woowapp_repair_nonce'); ?>
-                        <input type="hidden" name="action" value="repair_database">
-                        <button type="submit" class="button button-primary">
-                            🔧 Crear Tablas
-                        </button>
-                    </form>
-                <?php } ?>
-            </div>
-            
-            <!-- Estadísticas -->
             <div class="card" style="margin-top:20px;">
                 <h2>📊 Estadísticas Generales</h2>
                 <?php
                 $total_carts = $wpdb->get_var("SELECT COUNT(*) FROM " . self::$abandoned_cart_table_name);
                 $active_carts = $wpdb->get_var("SELECT COUNT(*) FROM " . self::$abandoned_cart_table_name . " WHERE status = 'active'");
                 $recovered = $wpdb->get_var("SELECT COUNT(*) FROM " . self::$abandoned_cart_table_name . " WHERE status = 'recovered'");
-                
-                $tracking_exists = $wpdb->get_var("SHOW TABLES LIKE '" . self::$tracking_table_name . "'") === self::$tracking_table_name;
-                if ($tracking_exists) {
-                    $total_sent = $wpdb->get_var("SELECT COUNT(*) FROM " . self::$tracking_table_name . " WHERE event_type = 'sent'");
-                    $total_clicks = $wpdb->get_var("SELECT COUNT(*) FROM " . self::$tracking_table_name . " WHERE event_type = 'click'");
-                    $total_conversions = $wpdb->get_var("SELECT COUNT(*) FROM " . self::$tracking_table_name . " WHERE event_type = 'conversion'");
-                } else {
-                    $total_sent = $total_clicks = $total_conversions = 0;
-                }
                 ?>
                 <table class="widefat">
                     <tr>
@@ -1704,27 +1375,7 @@ if ($customer) {
                         <th>Carritos Recuperados</th>
                         <td><?php echo number_format($recovered); ?></td>
                     </tr>
-                    <tr>
-                        <th>Mensajes Enviados</th>
-                        <td><?php echo number_format($total_sent); ?></td>
-                    </tr>
-                    <tr>
-                        <th>Clicks en Enlaces</th>
-                        <td><?php echo number_format($total_clicks); ?></td>
-                    </tr>
-                    <tr>
-                        <th>Conversiones</th>
-                        <td><?php echo number_format($total_conversions); ?></td>
-                    </tr>
                 </table>
-                
-                <?php if ($total_sent > 0): ?>
-                <div style="margin-top:20px;">
-                    <a href="<?php echo admin_url('admin.php?page=wse-pro-stats'); ?>" class="button button-primary">
-                        📊 Ver Dashboard Completo
-                    </a>
-                </div>
-                <?php endif; ?>
             </div>
         </div>
         
@@ -1753,14 +1404,6 @@ if ($customer) {
         
         if (!current_user_can('manage_woocommerce')) {
             return;
-        }
-        
-        switch ($_POST['action']) {
-            case 'repair_database':
-                $this->verify_and_repair_database();
-                self::create_database_tables();
-                wp_redirect(admin_url('admin.php?page=woowapp-diagnostic&repaired=1'));
-                exit;
         }
     }
 
@@ -1819,7 +1462,4 @@ if ($customer) {
     }
 }
 
-// Inicializar el plugin
 WooWApp::get_instance();
-
-
