@@ -1,52 +1,149 @@
 jQuery(document).ready(function($) {
-    let captureTimeout = null;
-    let lastCapturedData = null;
-    let captureAttempts = 0;
-    const MAX_ATTEMPTS = 5;
+    'use strict';
+    
+    // 🔍 Auto-detectar configuración del servidor
+    const SERVER_CONFIG = {
+        type: document.documentElement.getAttribute('data-server-type') || 'unknown',
+        debug: document.documentElement.getAttribute('data-wse-debug') === 'true',
+        ajaxUrl: (window.wseProCapture && window.wseProCapture.ajax_url) || '/wp-admin/admin-ajax.php',
+        nonce: (window.wseProCapture && window.wseProCapture.nonce) || '',
+    };
 
-    // 🔧 Selectores mejorados con múltiples alternativas
+    if (SERVER_CONFIG.debug) {
+        console.log('%c🚀 WooWApp - Modo Debug Activo', 'color: #f59e0b; font-weight: bold; font-size: 14px');
+        console.log('Configuración detectada:', SERVER_CONFIG);
+    }
+
+    let captureQueue = [];
+    let isProcessing = false;
+
+    // 📊 Selectores mejorados - Se prueban en orden
     const FIELD_SELECTORS = {
-        billing_email: '#billing_email, input[name="billing_email"]',
-        billing_phone: '#billing_phone, input[name="billing_phone"], input[name="phone"]',
-        billing_first_name: '#billing_first_name, input[name="billing_first_name"]',
-        billing_last_name: '#billing_last_name, input[name="billing_last_name"]',
-        billing_address_1: '#billing_address_1, textarea[name="billing_address_1"]',
-        billing_city: '#billing_city, input[name="billing_city"]',
-        billing_state: '#billing_state, select[name="billing_state"], input[name="billing_state"]',
-        billing_postcode: '#billing_postcode, input[name="billing_postcode"]',
-        billing_country: '#billing_country, select[name="billing_country"]'
+        billing_email: [
+            '#billing_email',
+            'input[name="billing_email"]',
+            '.woocommerce-billing-email input',
+            'input[type="email"][name*="billing"]',
+        ],
+        billing_phone: [
+            '#billing_phone',
+            'input[name="billing_phone"]',
+            'input[name="phone"]',
+            '.woocommerce-billing-phone input',
+        ],
+        billing_first_name: [
+            '#billing_first_name',
+            'input[name="billing_first_name"]',
+            '.woocommerce-billing-first_name input',
+        ],
+        billing_last_name: [
+            '#billing_last_name',
+            'input[name="billing_last_name"]',
+            '.woocommerce-billing-last_name input',
+        ],
+        billing_address_1: [
+            '#billing_address_1',
+            'textarea[name="billing_address_1"]',
+            'input[name="billing_address_1"]',
+        ],
+        billing_city: [
+            '#billing_city',
+            'input[name="billing_city"]',
+            '.woocommerce-billing-city input',
+        ],
+        billing_state: [
+            '#billing_state',
+            'select[name="billing_state"]',
+            'input[name="billing_state"]',
+        ],
+        billing_postcode: [
+            '#billing_postcode',
+            'input[name="billing_postcode"]',
+        ],
+        billing_country: [
+            '#billing_country',
+            'select[name="billing_country"]',
+        ],
     };
 
     /**
-     * 🔍 Obtener valor de campo con múltiples intentos
+     * 🔍 Encontrar elemento por múltiples selectores
      */
-    function getFieldValue(fieldName) {
+    function findField(fieldName) {
         const selectors = FIELD_SELECTORS[fieldName];
-        if (!selectors) return '';
-        
-        const $element = $(selectors).first();
-        
-        if (!$element.length) {
-            console.debug(`Campo no encontrado: ${fieldName}`);
-            return '';
+        if (!selectors) return null;
+
+        for (let selector of selectors) {
+            const $el = $(selector).first();
+            if ($el.length) {
+                return $el;
+            }
         }
 
-        let value = $element.val() || '';
-        
-        // Trim y sanitize
+        return null;
+    }
+
+    /**
+     * 📋 Obtener valor de campo
+     */
+    function getFieldValue(fieldName) {
+        const $field = findField(fieldName);
+        if (!$field) return '';
+
+        let value = $field.val() || '';
         value = String(value).trim();
-        
-        console.debug(`${fieldName}: "${value}"`);
+
+        if (SERVER_CONFIG.debug && value) {
+            console.log(`✅ ${fieldName}: "${value}"`);
+        }
+
         return value;
     }
 
     /**
-     * 📦 Capturar todos los datos del formulario
+     * 🌐 Enviar datos al servidor
      */
-    function captureCart() {
-        const billingData = {
+    function sendCaptureData(data) {
+        return new Promise((resolve) => {
+            $.ajax({
+                url: SERVER_CONFIG.ajaxUrl,
+                type: 'POST',
+                data: data,
+                timeout: 15000,
+                cache: false,
+                dataType: 'json',
+
+                // ✅ Éxito
+                success: function(response) {
+                    if (SERVER_CONFIG.debug) {
+                        console.log('%c✅ Datos capturados', 'color: #10b981', response);
+                    }
+                    resolve(true);
+                },
+
+                // ❌ Error
+                error: function(xhr, status, error) {
+                    if (SERVER_CONFIG.debug) {
+                        console.warn('%c⚠️  Error al enviar', 'color: #ef4444', {
+                            status: status,
+                            error: error,
+                            response: xhr.responseText
+                        });
+                    }
+                    resolve(false); // No fallar, continuar
+                }
+            });
+        });
+    }
+
+    /**
+     * 📤 Capturar y enviar datos
+     */
+    async function captureAndSend() {
+        if (isProcessing) return;
+
+        const data = {
             action: 'wse_pro_capture_cart',
-            nonce: wseProCapture.nonce,
             billing_email: getFieldValue('billing_email'),
             billing_phone: getFieldValue('billing_phone'),
             billing_first_name: getFieldValue('billing_first_name'),
@@ -55,125 +152,112 @@ jQuery(document).ready(function($) {
             billing_city: getFieldValue('billing_city'),
             billing_state: getFieldValue('billing_state'),
             billing_postcode: getFieldValue('billing_postcode'),
-            billing_country: getFieldValue('billing_country')
+            billing_country: getFieldValue('billing_country'),
         };
 
-        // ✅ Validación: Al menos email O teléfono
-        if (!billingData.billing_email && !billingData.billing_phone) {
-            console.log('⏭️  Sin email ni teléfono - no capturar');
-            return;
-        }
-
-        // 🔄 Verificar si los datos cambieron
-        const dataHash = JSON.stringify(billingData);
-        if (dataHash === lastCapturedData) {
-            console.log('📝 Datos sin cambios - no enviar');
-            return;
-        }
-
-        console.log('📤 Enviando datos al servidor...', billingData);
-
-        // 🌐 AJAX
-        $.ajax({
-            url: wseProCapture.ajax_url,
-            type: 'POST',
-            data: billingData,
-            timeout: 10000,
-            success: function(response) {
-                if (response.success && response.data.captured) {
-                    lastCapturedData = dataHash;
-                    console.log('✅ Carrito capturado correctamente');
-                    captureAttempts = 0; // Reset contador
-                } else {
-                    console.warn('⚠️  Servidor rechazó los datos:', response.data);
-                }
-            },
-            error: function(xhr, status, error) {
-                console.error('❌ Error al capturar:', error);
-                captureAttempts++;
+        // Validación: Al menos email o teléfono
+        if (!data.billing_email && !data.billing_phone) {
+            if (SERVER_CONFIG.debug) {
+                console.log('⏭️  Sin email o teléfono');
             }
-        });
-    }
-
-    /**
-     * ⏱️ Programar captura con debounce mejorado
-     */
-    function scheduleCapture() {
-        // Si alcanzó max intentos, no seguir
-        if (captureAttempts >= MAX_ATTEMPTS) {
-            console.warn('❌ Máximo de intentos alcanzado');
             return;
         }
 
-        clearTimeout(captureTimeout);
-        
-        // Esperar 1.5 segundos después del último cambio
-        captureTimeout = setTimeout(function() {
-            captureCart();
-        }, 1500);
+        if (SERVER_CONFIG.nonce) {
+            data.nonce = SERVER_CONFIG.nonce;
+        }
+
+        isProcessing = true;
+
+        if (SERVER_CONFIG.debug) {
+            console.log('%c📤 Enviando datos...', 'color: #6366f1', data);
+        }
+
+        await sendCaptureData(data);
+
+        isProcessing = false;
     }
 
     /**
-     * 🎯 Añadir listeners a campos
+     * 🎯 Adjuntar listeners a todos los campos
      */
     function attachListeners() {
-        // Listeners para cada selector
-        Object.values(FIELD_SELECTORS).forEach(function(selector) {
-            $(document).off('change blur input', selector);
-            $(document).on('change blur input', selector, function() {
-                console.log('👁️  Campo cambiado:', this.name);
-                scheduleCapture();
+        Object.keys(FIELD_SELECTORS).forEach(fieldName => {
+            const selectors = FIELD_SELECTORS[fieldName];
+            
+            selectors.forEach(selector => {
+                $(document).off('change blur input', selector);
+                $(document).on('change blur input', selector, function() {
+                    if (SERVER_CONFIG.debug) {
+                        console.log(`👁️  Campo cambió: ${fieldName}`);
+                    }
+                    
+                    // Debounce: Esperar 2 segundos
+                    clearTimeout(window.captureDebounceTimer);
+                    window.captureDebounceTimer = setTimeout(captureAndSend, 2000);
+                });
             });
         });
 
-        // 🆕 Listener para eventos de WooCommerce
-        $(document.body).off('updated_checkout').on('updated_checkout', function() {
-            console.log('🔄 Checkout actualizado - reintentando captura');
-            scheduleCapture();
-        });
-
-        // 🆕 Listener para Select2 (si está activo)
+        // Listener para Select2 (WooCommerce)
         $(document).off('select2:select').on('select2:select', 'select[name*="billing"]', function() {
-            console.log('✓ Select2 cambió');
-            scheduleCapture();
+            if (SERVER_CONFIG.debug) {
+                console.log('✓ Select2 cambió');
+            }
+            clearTimeout(window.captureDebounceTimer);
+            window.captureDebounceTimer = setTimeout(captureAndSend, 1500);
         });
 
-        console.log('✅ Listeners adjuntados correctamente');
+        // Listener para actualizaciones de checkout
+        $(document.body).off('updated_checkout').on('updated_checkout', function() {
+            if (SERVER_CONFIG.debug) {
+                console.log('%c🔄 Checkout actualizado', 'color: #6366f1');
+            }
+            clearTimeout(window.captureDebounceTimer);
+            window.captureDebounceTimer = setTimeout(captureAndSend, 2500);
+        });
+
+        if (SERVER_CONFIG.debug) {
+            console.log('%c✅ Listeners adjuntados', 'color: #10b981');
+        }
     }
 
     /**
      * 🚀 Inicialización
      */
     function init() {
-        console.log('%c🛒 WooWApp Cart Capture Iniciado', 'color: #10b981; font-weight: bold');
-        
-        // Adjuntar listeners
+        if (!$('form.checkout').length) {
+            if (SERVER_CONFIG.debug) {
+                console.log('⏳ Esperando formulario de checkout...');
+            }
+            return;
+        }
+
+        if (SERVER_CONFIG.debug) {
+            console.log('%c✅ Formulario encontrado - Inicializando', 'color: #10b981');
+        }
+
         attachListeners();
 
-        // Captura inicial después de 3 segundos (campo de teléfono personalizado requiere espera)
-        setTimeout(function() {
-            console.log('📌 Captura inicial (3 segundos después)');
-            captureCart();
-        }, 3000);
+        // Primera captura después de 3 segundos
+        setTimeout(captureAndSend, 3000);
 
-        // Reintentar cada 10 segundos si hay cambios
-        setInterval(function() {
-            if (captureAttempts > 0 && captureAttempts < MAX_ATTEMPTS) {
-                console.log(`🔁 Reintentando... (${captureAttempts}/${MAX_ATTEMPTS})`);
-                scheduleCapture();
-            }
-        }, 10000);
+        // Captura periódica cada 30 segundos
+        setInterval(captureAndSend, 30000);
     }
 
-    // Iniciar cuando jQuery esté listo
-    if ($('form.checkout').length) {
-        init();
+    // Iniciar cuando esté listo
+    if (document.readyState === 'loading') {
+        $(document).on('ready', init);
     } else {
-        // Esperar a que aparezca el formulario
-        $(document).on('updated_checkout', function() {
-            if ($('form.checkout').length && captureAttempts === 0) {
-                init();
-            }
-        });
+        init();
     }
+
+    // También iniciar cuando checkout se actualice
+    $(document.body).on('updated_checkout', function() {
+        if (!window.wseInitialized) {
+            window.wseInitialized = true;
+            init();
+        }
+    });
 });
