@@ -617,47 +617,50 @@ final class WooWApp {
     }
 
     private function process_single_cart($cart) {
-        $cart_id = $cart->id;
-        $created_at = strtotime($cart->created_at);
-        $current_time = current_time('timestamp');
-        $minutes_elapsed = floor(($current_time - $created_at) / 60);
+    $cart_id = $cart->id;
+    $created_at = strtotime($cart->created_at);
+    $current_time = current_time('timestamp');
+    $minutes_elapsed = floor(($current_time - $created_at) / 60);
+    
+    $this->log_info("Procesando carrito #{$cart_id} - {$minutes_elapsed} minutos desde creación");
+    
+    for ($i = 1; $i <= 3; $i++) {
+        $message_enabled = get_option("wse_pro_abandoned_cart_enable_msg_{$i}", 'no');
+        $message_delay = (int) get_option("wse_pro_abandoned_cart_time_{$i}", 60);
+        $message_unit = get_option("wse_pro_abandoned_cart_unit_{$i}", 'minutes');
         
-        $this->log_info("Procesando carrito #{$cart_id} - {$minutes_elapsed} minutos desde creación");
+        if ($message_enabled !== 'yes') {
+            $this->log_info("→ Mensaje #{$i} desactivado");
+            continue;
+        }
         
-        for ($i = 1; $i <= 3; $i++) {
-            $message_enabled = get_option("wse_pro_abandoned_cart_enable_msg_{$i}", 'no');
-            $message_delay = (int) get_option("wse_pro_abandoned_cart_time_{$i}", 60);
-            $message_unit = get_option("wse_pro_abandoned_cart_unit_{$i}", 'minutes');
+        $delay_in_minutes = $message_delay;
+        if ($message_unit === 'hours') {
+            $delay_in_minutes = $message_delay * 60;
+        } elseif ($message_unit === 'days') {
+            $delay_in_minutes = $message_delay * 1440;
+        }
+        
+        if ($minutes_elapsed >= $delay_in_minutes) {
+            // Parsear messages_sent con mayor robustez
+            $messages_sent_str = $cart->messages_sent ?: '0,0,0';
+            $messages_sent = array_pad(explode(',', $messages_sent_str), 3, '0');
             
-            if ($message_enabled !== 'yes') {
-                $this->log_info("→ Mensaje #{$i} desactivado");
-                continue;
-            }
+            $already_sent = !empty($messages_sent[$i - 1]) && $messages_sent[$i - 1] == '1';
             
-            $delay_in_minutes = $message_delay;
-            if ($message_unit === 'hours') {
-                $delay_in_minutes = $message_delay * 60;
-            } elseif ($message_unit === 'days') {
-                $delay_in_minutes = $message_delay * 1440;
-            }
-            
-            if ($minutes_elapsed >= $delay_in_minutes) {
-                $messages_sent = explode(',', $cart->messages_sent);
-                $already_sent = isset($messages_sent[$i - 1]) && $messages_sent[$i - 1] == '1';
-                
-                if (!$already_sent) {
-                    $this->log_info("→ Mensaje #{$i} debe enviarse (delay: {$delay_in_minutes} min)");
-                    $this->send_abandoned_cart_message($cart, $i);
-                    break;
-                } else {
-                    $this->log_info("→ Mensaje #{$i} ya fue enviado");
-                }
+            if (!$already_sent) {
+                $this->log_info("→ Mensaje #{$i} debe enviarse (delay: {$delay_in_minutes} min)");
+                $this->send_abandoned_cart_message($cart, $i);
+                return; // Salir después de enviar un mensaje
             } else {
-                $remaining = $delay_in_minutes - $minutes_elapsed;
-                $this->log_info("→ Mensaje #{$i} faltan {$remaining} minutos (delay: {$delay_in_minutes} min)");
+                $this->log_info("→ Mensaje #{$i} ya fue enviado");
             }
+        } else {
+            $remaining = $delay_in_minutes - $minutes_elapsed;
+            $this->log_info("→ Mensaje #{$i} faltan {$remaining} minutos");
         }
     }
+}
 
     private function send_abandoned_cart_message($cart_row, $message_number) {
         global $wpdb;
@@ -1463,3 +1466,4 @@ final class WooWApp {
 }
 
 WooWApp::get_instance();
+
