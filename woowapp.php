@@ -63,14 +63,17 @@ final class WooWApp {
         return self::$instance;
     }
 
-    private function __construct() {
-        global $wpdb;
-        self::$abandoned_cart_table_name = $wpdb->prefix . 'wse_pro_abandoned_carts';
-        self::$tracking_table_name = $wpdb->prefix . 'wse_pro_tracking';
-        
-        add_action('plugins_loaded', [$this, 'init']);
-        add_action('plugins_loaded', [$this, 'maybe_upgrade_database'], 5);
-    }
+   private function __construct() {
+    global $wpdb;
+    self::$abandoned_cart_table_name = $wpdb->prefix . 'wse_pro_abandoned_carts';
+    self::$tracking_table_name = $wpdb->prefix . 'wse_pro_tracking';
+    
+    // 🆕 Cargar compatibilidad de servidor
+    add_action('plugins_loaded', [$this, 'load_server_compatibility'], 1);
+    
+    add_action('plugins_loaded', [$this, 'init']);
+    add_action('plugins_loaded', [$this, 'maybe_upgrade_database'], 5);
+}
 
     /**
      * ========================================
@@ -431,15 +434,27 @@ final class WooWApp {
     }
 
     public function includes() {
-        require_once WSE_PRO_PATH . 'includes/class-wse-pro-settings.php';
-        require_once WSE_PRO_PATH . 'includes/class-wse-pro-api-handler.php';
-        require_once WSE_PRO_PATH . 'includes/class-wse-pro-placeholders.php';
-        require_once WSE_PRO_PATH . 'includes/class-wse-pro-coupon-manager.php';
-        require_once WSE_PRO_PATH . 'includes/class-wse-pro-stats-dashboard.php';
-    }
+    require_once WSE_PRO_PATH . 'includes/class-wse-pro-server-compatibility.php';
+    require_once WSE_PRO_PATH . 'includes/class-wse-pro-settings.php';
+    require_once WSE_PRO_PATH . 'includes/class-wse-pro-api-handler.php';
+    require_once WSE_PRO_PATH . 'includes/class-wse-pro-placeholders.php';
+    require_once WSE_PRO_PATH . 'includes/class-wse-pro-coupon-manager.php';
+    require_once WSE_PRO_PATH . 'includes/class-wse-pro-stats-dashboard.php';
+}
 
     public function init_classes() {
         new WSE_Pro_Settings();
+public function init_classes() {
+    new WSE_Pro_Settings();
+    WSE_Pro_Server_Compatibility::get_instance();  // 🆕 NUEVA LÍNEA
+    WSE_Pro_Stats_Dashboard::get_instance();
+    
+    // Agregar página de diagnóstico en admin
+    if (is_admin()) {
+        add_action('admin_menu', [$this, 'add_diagnostic_menu'], 99);
+        add_action('admin_init', [$this, 'handle_diagnostic_actions']);
+    }
+        
         WSE_Pro_Stats_Dashboard::get_instance();
         
         // Agregar página de diagnóstico en admin
@@ -506,9 +521,12 @@ final class WooWApp {
      * ========================================
      */
 
-    public function enqueue_frontend_scripts() {
-    // ✅ Enrolar SOLO cart-capture.js (no frontend.js)
+   public function enqueue_frontend_scripts() {
     if (is_checkout() && !is_wc_endpoint_url('order-received')) {
+        // 🆕 Detectar server type
+        $server_compat = WSE_Pro_Server_Compatibility::get_instance();
+        $server_info = $server_compat->get_server_info();
+        
         wp_enqueue_script(
             'wse-pro-cart-capture',
             WSE_PRO_URL . 'assets/js/cart-capture.js',
@@ -520,95 +538,140 @@ final class WooWApp {
         wp_localize_script('wse-pro-cart-capture', 'wseProCapture', [
             'ajax_url' => admin_url('admin-ajax.php'),
             'nonce'    => wp_create_nonce('wse_pro_capture_cart_nonce'),
-            'debug'    => defined('WP_DEBUG') && WP_DEBUG // Para logs en consola
+            'debug'    => defined('WP_DEBUG') && WP_DEBUG
         ]);
+
+        // 🆕 Pasar info del servidor al HTML
+        echo '<script>';
+        echo 'document.documentElement.setAttribute("data-server-type", "' . esc_attr($server_info['server_type']) . '");';
+        echo 'document.documentElement.setAttribute("data-wse-debug", "' . (defined('WP_DEBUG') && WP_DEBUG ? 'true' : 'false') . '");';
+        echo '</script>';
     }
 }
 
     public function capture_cart_via_ajax() {
-        check_ajax_referer('wse_pro_capture_cart_nonce', 'nonce');
-        
-        global $wpdb;
-        
-        $billing_data = [
-            'billing_email'      => isset($_POST['billing_email']) ? sanitize_email($_POST['billing_email']) : '',
-            'billing_phone'      => isset($_POST['billing_phone']) ? sanitize_text_field($_POST['billing_phone']) : '',
-            'billing_first_name' => isset($_POST['billing_first_name']) ? sanitize_text_field($_POST['billing_first_name']) : '',
-            'billing_last_name'  => isset($_POST['billing_last_name']) ? sanitize_text_field($_POST['billing_last_name']) : '',
-            'billing_address_1'  => isset($_POST['billing_address_1']) ? sanitize_text_field($_POST['billing_address_1']) : '',
-            'billing_city'       => isset($_POST['billing_city']) ? sanitize_text_field($_POST['billing_city']) : '',
-            'billing_state'      => isset($_POST['billing_state']) ? sanitize_text_field($_POST['billing_state']) : '',
-            'billing_postcode'   => isset($_POST['billing_postcode']) ? sanitize_text_field($_POST['billing_postcode']) : '',
-            'billing_country'    => isset($_POST['billing_country']) ? sanitize_text_field($_POST['billing_country']) : '',
-        ];
-        
-        if (empty($billing_data['billing_email']) && empty($billing_data['billing_phone'])) {
-            wp_send_json_success(['captured' => false]);
-            return;
-        }
-        
-        $cart = WC()->cart;
-        if (!$cart || $cart->is_empty()) {
-            wp_send_json_success(['captured' => false]);
-            return;
-        }
-        
-        $session_id = WC()->session->get_customer_id();
-        $user_id = get_current_user_id();
-        $cart_contents = maybe_serialize($cart->get_cart());
-        $cart_total = $cart->get_total('edit');
-        $current_time = current_time('mysql');
-        
-        $existing_cart = $wpdb->get_row($wpdb->prepare(
-            "SELECT id FROM " . self::$abandoned_cart_table_name . " 
-             WHERE session_id = %s AND status = 'active'",
-            $session_id
-        ));
-        
-        $cart_data = array_merge([
-            'user_id'         => $user_id,
-            'session_id'      => $session_id,
-            'first_name'      => $billing_data['billing_first_name'],
-            'phone'           => $billing_data['billing_phone'],
-            'cart_contents'   => $cart_contents,
-            'cart_total'      => $cart_total,
-            'checkout_data'   => '',
-            'updated_at'      => $current_time,
-            'messages_sent'   => '0,0,0'
-        ], $billing_data);
-        
-        $format = ['%d', '%s', '%s', '%s', '%s', '%f', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s'];
-
-        if ($existing_cart) {
-            $wpdb->update(
-                self::$abandoned_cart_table_name,
-                $cart_data,
-                ['id' => $existing_cart->id],
-                $format,
-                ['%d']
-            );
-            $cart_id = $existing_cart->id;
-        } else {
-            $cart_data['created_at'] = $current_time;
-            $cart_data['recovery_token'] = bin2hex(random_bytes(16));
-            $format[] = '%s';
-            $format[] = '%s';
-            
-            $wpdb->insert(
-                self::$abandoned_cart_table_name,
-                $cart_data,
-                $format
-            );
-            $cart_id = $wpdb->insert_id;
-        }
-
-        if (empty($cart_id)) {
-            wp_send_json_error(['message' => 'Error al guardar el carrito.']);
-            return;
-        }
-
-        wp_send_json_success(['captured' => true, 'cart_id' => $cart_id]);
+    // Verificar nonce (pero no fallar si no está presente)
+    if (isset($_POST['nonce'])) {
+        check_ajax_referer('wse_pro_capture_cart_nonce', 'nonce', false);
     }
+    
+    global $wpdb;
+    
+    // Recopilar datos de MÚLTIPLES FUENTES
+    $billing_data = $this->get_billing_data_from_multiple_sources();
+    
+    if (empty($billing_data['billing_email']) && empty($billing_data['billing_phone'])) {
+        wp_send_json_success(['captured' => false]);
+        return;
+    }
+
+    $cart = WC()->cart;
+    if (!$cart || $cart->is_empty()) {
+        wp_send_json_success(['captured' => false]);
+        return;
+    }
+    
+    $this->save_cart_to_database($billing_data);
+    wp_send_json_success(['captured' => true]);
+}
+
+/**
+ * 🔍 Obtener datos de billing de MÚLTIPLES FUENTES
+ */
+private function get_billing_data_from_multiple_sources() {
+    $sources = [
+        'post' => $_POST ?? [],
+        'session' => WC()->session ? WC()->session->get_customer_data() : [],
+        'customer' => WC()->customer ? [
+            'billing_email' => WC()->customer->get_billing_email(),
+            'billing_phone' => WC()->customer->get_billing_phone(),
+            'billing_first_name' => WC()->customer->get_billing_first_name(),
+            'billing_last_name' => WC()->customer->get_billing_last_name(),
+            'billing_address_1' => WC()->customer->get_billing_address_1(),
+            'billing_city' => WC()->customer->get_billing_city(),
+            'billing_state' => WC()->customer->get_billing_state(),
+            'billing_postcode' => WC()->customer->get_billing_postcode(),
+            'billing_country' => WC()->customer->get_billing_country(),
+        ] : [],
+    ];
+    
+    $billing_fields = [
+        'billing_email',
+        'billing_phone',
+        'billing_first_name',
+        'billing_last_name',
+        'billing_address_1',
+        'billing_city',
+        'billing_state',
+        'billing_postcode',
+        'billing_country',
+    ];
+    
+    $result = [];
+    
+    foreach ($billing_fields as $field) {
+        if (!empty($sources['post'][$field])) {
+            $result[$field] = sanitize_text_field($sources['post'][$field]);
+        }
+        elseif (!empty($sources['session'][$field])) {
+            $result[$field] = sanitize_text_field($sources['session'][$field]);
+        }
+        elseif (!empty($sources['customer'][$field])) {
+            $result[$field] = sanitize_text_field($sources['customer'][$field]);
+        }
+        else {
+            $result[$field] = '';
+        }
+    }
+    
+    return $result;
+}
+
+private function save_cart_to_database($billing_data) {
+    global $wpdb;
+    
+    $session_id = WC()->session->get_customer_id();
+    $user_id = get_current_user_id();
+    $cart = WC()->cart;
+    
+    $cart_data = [
+        'user_id' => $user_id,
+        'session_id' => $session_id,
+        'first_name' => $billing_data['billing_first_name'],
+        'phone' => $billing_data['billing_phone'],
+        'cart_contents' => maybe_serialize($cart->get_cart()),
+        'cart_total' => $cart->get_total('edit'),
+        'created_at' => current_time('mysql'),
+        'updated_at' => current_time('mysql'),
+        'recovery_token' => bin2hex(random_bytes(16)),
+        'status' => 'active',
+        'messages_sent' => '0,0,0'
+    ];
+    
+    $cart_data = array_merge($cart_data, $billing_data);
+    
+    $wpdb->insert(
+        $wpdb->prefix . 'wse_pro_abandoned_carts',
+        $cart_data,
+        $this->get_format_array($cart_data)
+    );
+    
+    $this->log_info("Carrito capturado - ID: " . $wpdb->insert_id);
+}
+
+private function get_format_array($data) {
+    $format = [];
+    foreach ($data as $value) {
+        if (is_int($value)) {
+            $format[] = '%d';
+        } elseif (is_float($value)) {
+            $format[] = '%f';
+        } else {
+            $format[] = '%s';
+        }
+    }
+    return $format;
+}
 
     /**
      * 🔧 PROCESAMIENTO DE CARRITOS - VERSIÓN CORREGIDA v2.2.2
@@ -1795,6 +1858,7 @@ final class WooWApp {
 
 // Inicializar el plugin
 WooWApp::get_instance();
+
 
 
 
