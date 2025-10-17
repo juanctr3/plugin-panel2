@@ -63,8 +63,10 @@ jQuery(document).ready(function($) {
         ],
         billing_first_name: [
             '#billing_first_name',
+            '#billing-first_name',
             '#billing-first-name',
             'input[name="billing_first_name"]',
+            'input[name="billing-first_name"]',
             '.woocommerce-billing-first_name input',
             '[data-field-name="billing_first_name"]',
             '[aria-label*="nombre"]',
@@ -74,8 +76,10 @@ jQuery(document).ready(function($) {
         ],
         billing_last_name: [
             '#billing_last_name',
+            '#billing-last_name',
             '#billing-last-name',
             'input[name="billing_last_name"]',
+            'input[name="billing-last_name"]',
             '.woocommerce-billing-last_name input',
             '[data-field-name="billing_last_name"]',
             '[aria-label*="apellido"]',
@@ -223,8 +227,9 @@ jQuery(document).ready(function($) {
     }
 
     /**
-     * 🔍 Encontrar elemento por múltiples selectores
+     * 🔍 Encontrar elemento por múltiples selectores - MÁS ROBUSTO
      * Intenta cada selector hasta encontrar el campo
+     * Incluye búsqueda inteligente por atributos
      */
     function findField(fieldName) {
         const selectors = FIELD_SELECTORS[fieldName];
@@ -236,26 +241,64 @@ jQuery(document).ready(function($) {
             return null;
         }
 
+        // Intentar cada selector
         for (let i = 0; i < selectors.length; i++) {
             const selector = selectors[i];
             
             try {
                 const $el = $(selector).first();
                 
-                // Verificar que el elemento existe y es visible
-                if ($el.length && ($el.is(':visible') || $el.attr('type') === 'hidden')) {
+                // Verificar que el elemento existe y es visible o es hidden input
+                if ($el.length && ($el.is(':visible') || $el.attr('type') === 'hidden' || $el.prop('type') === 'hidden')) {
                     if (SERVER_CONFIG.debug) {
                         console.log(`✅ ${fieldName} encontrado con selector: ${selector}`);
                     }
                     return $el;
                 }
             } catch (e) {
-                // Selector CSS inválido, continuar con el siguiente
+                // Selector CSS inválido, continuar
+            }
+        }
+
+        // 🆕 BÚSQUEDA ALTERNATIVA: Si no encontró, buscar por atributos inteligentes
+        if (SERVER_CONFIG.debug) {
+            console.log(`⚠️  Selector estándar no funcionó para ${fieldName}, intentando búsqueda alternativa...`);
+        }
+
+        // Buscar por name exacto
+        let $alt = $(`input[name="${fieldName}"], select[name="${fieldName}"], textarea[name="${fieldName}"]`).first();
+        if ($alt.length) {
+            if (SERVER_CONFIG.debug) {
+                console.log(`✅ ${fieldName} encontrado por name alternativo`);
+            }
+            return $alt;
+        }
+
+        // Buscar por atributos data-* alternativos
+        $alt = $(`[data-field="${fieldName}"], [data-name="${fieldName}"]`).first();
+        if ($alt.length) {
+            if (SERVER_CONFIG.debug) {
+                console.log(`✅ ${fieldName} encontrado por data-* alternativo`);
+            }
+            return $alt;
+        }
+
+        // 🆕 BÚSQUEDA DESESPERADA: Buscar en formularios activos
+        const $form = $('form.checkout, form.wc-block-checkout__form, form.wp-block-woocommerce-checkout-form, [data-checkout] form, form[name*="checkout"]').first();
+        
+        if ($form.length) {
+            // Buscar el input dentro del formulario por cualquier atributo que contenga el nombre del campo
+            $alt = $form.find(`[id*="${fieldName.replace('billing_', '')}"], [class*="${fieldName.replace('billing_', '')}"]`).first();
+            if ($alt.length && $alt.is('input, select, textarea')) {
+                if (SERVER_CONFIG.debug) {
+                    console.log(`✅ ${fieldName} encontrado por búsqueda inteligente en formulario`);
+                }
+                return $alt;
             }
         }
 
         if (SERVER_CONFIG.debug) {
-            console.warn(`❌ Campo NO encontrado: ${fieldName}`);
+            console.warn(`❌ Campo NO encontrado: ${fieldName} - Intentó ${selectors.length} selectores`);
         }
         return null;
     }
