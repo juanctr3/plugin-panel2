@@ -1,137 +1,179 @@
-/**
- * WooWApp - Captura de Carrito v3.0 (Definitiva)
- * Este script captura los datos del formulario de pago en tiempo real de forma eficiente y robusta.
- *
- * Mejoras clave:
- * - Selectores universales (ID y name) para máxima compatibilidad con temas.
- * - Lógica de "debounce" optimizada para reducir la carga del servidor.
- * - Solo envía datos si realmente han cambiado.
- * - Logging detallado en la consola para una depuración sencilla.
- */
-jQuery(function($) {
-    'use strict';
-
+jQuery(document).ready(function($) {
     let captureTimeout = null;
-    let lastSentDataHash = null; // Almacena un hash de los últimos datos enviados.
-    const DEBOUNCE_DELAY = 1800; // Aumentamos ligeramente el tiempo de espera a 1.8 segundos.
+    let lastCapturedData = null;
+    let captureAttempts = 0;
+    const MAX_ATTEMPTS = 5;
 
-    /**
-     * Obtiene el valor de un campo utilizando una lista de selectores posibles.
-     * Devuelve el primer valor que no esté vacío.
-     * @param {string[]} selectors - Un array de selectores jQuery.
-     * @returns {string} El valor encontrado o una cadena vacía.
-     */
-    const getFieldValue = (selectors) => {
-        for (const selector of selectors) {
-            const value = $(selector).val();
-            if (value && value.trim() !== '') {
-                return value.trim();
-            }
-        }
-        return '';
+    // 🔧 Selectores mejorados con múltiples alternativas
+    const FIELD_SELECTORS = {
+        billing_email: '#billing_email, input[name="billing_email"]',
+        billing_phone: '#billing_phone, input[name="billing_phone"], input[name="phone"]',
+        billing_first_name: '#billing_first_name, input[name="billing_first_name"]',
+        billing_last_name: '#billing_last_name, input[name="billing_last_name"]',
+        billing_address_1: '#billing_address_1, textarea[name="billing_address_1"]',
+        billing_city: '#billing_city, input[name="billing_city"]',
+        billing_state: '#billing_state, select[name="billing_state"], input[name="billing_state"]',
+        billing_postcode: '#billing_postcode, input[name="billing_postcode"]',
+        billing_country: '#billing_country, select[name="billing_country"]'
     };
 
     /**
-     * Función principal que recopila y envía los datos del formulario.
+     * 🔍 Obtener valor de campo con múltiples intentos
      */
-    const captureCartData = () => {
-        // 1. Recopilar datos con selectores robustos
+    function getFieldValue(fieldName) {
+        const selectors = FIELD_SELECTORS[fieldName];
+        if (!selectors) return '';
+        
+        const $element = $(selectors).first();
+        
+        if (!$element.length) {
+            console.debug(`Campo no encontrado: ${fieldName}`);
+            return '';
+        }
+
+        let value = $element.val() || '';
+        
+        // Trim y sanitize
+        value = String(value).trim();
+        
+        console.debug(`${fieldName}: "${value}"`);
+        return value;
+    }
+
+    /**
+     * 📦 Capturar todos los datos del formulario
+     */
+    function captureCart() {
         const billingData = {
-            billing_email:      getFieldValue(['#billing_email', 'input[name="billing_email"]']),
-            billing_phone:      getFieldValue(['#billing_phone', 'input[name="billing_phone"]', 'form.checkout input[type="tel"]']),
-            billing_first_name: getFieldValue(['#billing_first_name', 'input[name="billing_first_name"]']),
-            billing_last_name:  getFieldValue(['#billing_last_name', 'input[name="billing_last_name"]']),
-            billing_country:    getFieldValue(['#billing_country', 'select[name="billing_country"]']),
-            billing_state:      getFieldValue(['#billing_state', 'select[name="billing_state"]', 'input[name="billing_state"]']),
-            billing_city:       getFieldValue(['#billing_city', 'input[name="billing_city"]']),
-            billing_address_1:  getFieldValue(['#billing_address_1', 'input[name="billing_address_1"]']),
-            billing_postcode:   getFieldValue(['#billing_postcode', 'input[name="billing_postcode"]']),
+            action: 'wse_pro_capture_cart',
+            nonce: wseProCapture.nonce,
+            billing_email: getFieldValue('billing_email'),
+            billing_phone: getFieldValue('billing_phone'),
+            billing_first_name: getFieldValue('billing_first_name'),
+            billing_last_name: getFieldValue('billing_last_name'),
+            billing_address_1: getFieldValue('billing_address_1'),
+            billing_city: getFieldValue('billing_city'),
+            billing_state: getFieldValue('billing_state'),
+            billing_postcode: getFieldValue('billing_postcode'),
+            billing_country: getFieldValue('billing_country')
         };
 
-        // 2. Condición de salida: no hacer nada si no hay teléfono o email.
-        if (!billingData.billing_phone && !billingData.billing_email) {
-            console.log('WooWApp: Captura detenida. Email y teléfono están vacíos.');
-            return;
-        }
-        
-        // 3. Crear un "hash" (una firma única) de los datos actuales para compararlos.
-        const currentDataHash = JSON.stringify(billingData);
-
-        // 4. Condición de salida: no enviar si los datos son idénticos a los últimos enviados.
-        if (currentDataHash === lastSentDataHash) {
-            console.log('WooWApp: Los datos no han cambiado. No se requiere envío.');
+        // ✅ Validación: Al menos email O teléfono
+        if (!billingData.billing_email && !billingData.billing_phone) {
+            console.log('⏭️  Sin email ni teléfono - no capturar');
             return;
         }
 
-        console.log('WooWApp: Datos nuevos detectados. Preparando envío...', billingData);
+        // 🔄 Verificar si los datos cambieron
+        const dataHash = JSON.stringify(billingData);
+        if (dataHash === lastCapturedData) {
+            console.log('📝 Datos sin cambios - no enviar');
+            return;
+        }
 
-        // 5. Enviar los datos al servidor.
+        console.log('📤 Enviando datos al servidor...', billingData);
+
+        // 🌐 AJAX
         $.ajax({
-            type: 'POST',
             url: wseProCapture.ajax_url,
-            data: {
-                action: 'wse_pro_capture_cart',
-                nonce: wseProCapture.nonce,
-                ...billingData // Añade todos los campos recopilados
-            },
-            success: (response) => {
+            type: 'POST',
+            data: billingData,
+            timeout: 10000,
+            success: function(response) {
                 if (response.success && response.data.captured) {
-                    // Si el envío fue exitoso, actualizamos el hash de los últimos datos enviados.
-                    lastSentDataHash = currentDataHash;
-                    console.log('%cWooWApp: ¡Éxito! Carrito capturado en el servidor.', 'color: #28a745; font-weight: bold;', 'ID:', response.data.cart_id);
+                    lastCapturedData = dataHash;
+                    console.log('✅ Carrito capturado correctamente');
+                    captureAttempts = 0; // Reset contador
                 } else {
-                    console.warn('WooWApp: El servidor no pudo capturar el carrito.', response.data?.message || 'Respuesta no exitosa.');
+                    console.warn('⚠️  Servidor rechazó los datos:', response.data);
                 }
             },
-            error: (xhr, status, error) => {
-                console.error('WooWApp: Fallo crítico en la solicitud AJAX.', { status, error });
+            error: function(xhr, status, error) {
+                console.error('❌ Error al capturar:', error);
+                captureAttempts++;
             }
         });
-    };
-    
+    }
+
     /**
-     * Programa la ejecución de `captureCartData` después de un breve retraso (debounce).
-     * Esto evita enviar una solicitud al servidor cada vez que el usuario presiona una tecla.
+     * ⏱️ Programar captura con debounce mejorado
      */
-    const scheduleCapture = (event) => {
-        // Si el evento viene de un cambio de país o estado, ejecuta la captura de inmediato.
-        if ($(event.target).is('#billing_country, #billing_state')) {
-            console.log(`WooWApp: Cambio detectado en ${event.target.id}. Ejecutando captura inmediata.`);
-            clearTimeout(captureTimeout); // Cancela cualquier temporizador pendiente
-            captureCartData();
-        } else {
-            clearTimeout(captureTimeout); // Reinicia el temporizador
-            captureTimeout = setTimeout(captureCartData, DEBOUNCE_DELAY);
+    function scheduleCapture() {
+        // Si alcanzó max intentos, no seguir
+        if (captureAttempts >= MAX_ATTEMPTS) {
+            console.warn('❌ Máximo de intentos alcanzado');
+            return;
         }
-    };
-    
-    // Lista de selectores que activarán la captura.
-    // Usamos 'input' para texto y 'change' para desplegables.
-    const triggerSelectors = [
-        'input[name="billing_email"]',
-        'input[name="billing_phone"]',
-        'input[name="billing_first_name"]',
-        'input[name="billing_last_name"]',
-        'select[name="billing_country"]',
-        'select[name="billing_state"]',
-        'input[name="billing_state"]',
-        'input[name="billing_city"]',
-        'input[name="billing_address_1"]',
-        'input[name="billing_postcode"]',
-        'form.checkout input[type="tel"]'
-    ].join(', ');
 
-    // Asignar los listeners a los eventos.
-    $(document).on('input change', triggerSelectors, scheduleCapture);
+        clearTimeout(captureTimeout);
+        
+        // Esperar 1.5 segundos después del último cambio
+        captureTimeout = setTimeout(function() {
+            captureCart();
+        }, 1500);
+    }
 
-    // WooCommerce dispara 'updated_checkout' al cambiar métodos de envío, etc.
-    $(document.body).on('updated_checkout', () => {
-        console.log('WooWApp: Evento "updated_checkout" de WooCommerce detectado. Programando captura.');
-        scheduleCapture({ target: {} }); // Llama con un objeto de evento vacío
-    });
+    /**
+     * 🎯 Añadir listeners a campos
+     */
+    function attachListeners() {
+        // Listeners para cada selector
+        Object.values(FIELD_SELECTORS).forEach(function(selector) {
+            $(document).off('change blur input', selector);
+            $(document).on('change blur input', selector, function() {
+                console.log('👁️  Campo cambiado:', this.name);
+                scheduleCapture();
+            });
+        });
 
-    // Ejecuta una captura inicial por si el navegador autocompleta los campos al cargar la página.
-    setTimeout(captureCartData, 3000);
+        // 🆕 Listener para eventos de WooCommerce
+        $(document.body).off('updated_checkout').on('updated_checkout', function() {
+            console.log('🔄 Checkout actualizado - reintentando captura');
+            scheduleCapture();
+        });
 
-    console.log('%cWooWApp: Script de captura de carritos (v3.0 Definitiva) cargado.', 'color: #6366f1; font-weight: bold;');
+        // 🆕 Listener para Select2 (si está activo)
+        $(document).off('select2:select').on('select2:select', 'select[name*="billing"]', function() {
+            console.log('✓ Select2 cambió');
+            scheduleCapture();
+        });
+
+        console.log('✅ Listeners adjuntados correctamente');
+    }
+
+    /**
+     * 🚀 Inicialización
+     */
+    function init() {
+        console.log('%c🛒 WooWApp Cart Capture Iniciado', 'color: #10b981; font-weight: bold');
+        
+        // Adjuntar listeners
+        attachListeners();
+
+        // Captura inicial después de 3 segundos (campo de teléfono personalizado requiere espera)
+        setTimeout(function() {
+            console.log('📌 Captura inicial (3 segundos después)');
+            captureCart();
+        }, 3000);
+
+        // Reintentar cada 10 segundos si hay cambios
+        setInterval(function() {
+            if (captureAttempts > 0 && captureAttempts < MAX_ATTEMPTS) {
+                console.log(`🔁 Reintentando... (${captureAttempts}/${MAX_ATTEMPTS})`);
+                scheduleCapture();
+            }
+        }, 10000);
+    }
+
+    // Iniciar cuando jQuery esté listo
+    if ($('form.checkout').length) {
+        init();
+    } else {
+        // Esperar a que aparezca el formulario
+        $(document).on('updated_checkout', function() {
+            if ($('form.checkout').length && captureAttempts === 0) {
+                init();
+            }
+        });
+    }
 });
