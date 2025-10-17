@@ -1,7 +1,18 @@
+/**
+ * WooWApp - Sistema de Captura de Carrito Abandonado
+ * Detección automática de campos - Compatible con todos los temas
+ * 
+ * @package WooWApp
+ * @version 2.2.2
+ */
+
 jQuery(document).ready(function($) {
     'use strict';
     
-    // 🔍 Auto-detectar configuración del servidor
+    // ==========================================
+    // 🔍 CONFIGURACIÓN DEL SERVIDOR
+    // ==========================================
+    
     const SERVER_CONFIG = {
         type: document.documentElement.getAttribute('data-server-type') || 'unknown',
         debug: document.documentElement.getAttribute('data-wse-debug') === 'true',
@@ -11,84 +22,183 @@ jQuery(document).ready(function($) {
 
     if (SERVER_CONFIG.debug) {
         console.log('%c🚀 WooWApp - Modo Debug Activo', 'color: #f59e0b; font-weight: bold; font-size: 14px');
-        console.log('Configuración detectada:', SERVER_CONFIG);
+        console.log('🖥️  Servidor:', SERVER_CONFIG.type);
+        console.log('🔗 AJAX URL:', SERVER_CONFIG.ajaxUrl);
+        console.log('✅ Nonce presente:', !!SERVER_CONFIG.nonce);
     }
 
-    let captureQueue = [];
     let isProcessing = false;
 
-    // 📊 Selectores mejorados - Se prueban en orden
-    const FIELD_SELECTORS = {
+    // ==========================================
+    // 📊 SELECTORES DE CAMPOS - CONFIGURACIÓN BASE
+    // ==========================================
+    
+    let FIELD_SELECTORS = {
         billing_email: [
             '#billing_email',
+            '#billing-email',
             'input[name="billing_email"]',
             '.woocommerce-billing-email input',
             'input[type="email"][name*="billing"]',
+            '[data-field-name="billing_email"]',
+            '[aria-label*="email"]',
+            '[aria-label*="correo"]',
         ],
         billing_phone: [
             '#billing_phone',
+            '#billing-phone',
             'input[name="billing_phone"]',
             'input[name="phone"]',
             '.woocommerce-billing-phone input',
+            '[data-field-name="billing_phone"]',
+            '[aria-label*="teléfono"]',
+            '[aria-label*="phone"]',
+            '[aria-label*="celular"]',
         ],
         billing_first_name: [
             '#billing_first_name',
+            '#billing-first-name',
             'input[name="billing_first_name"]',
             '.woocommerce-billing-first_name input',
+            '[data-field-name="billing_first_name"]',
+            '[aria-label*="nombre"]',
+            '[aria-label*="first name"]',
         ],
         billing_last_name: [
             '#billing_last_name',
+            '#billing-last-name',
             'input[name="billing_last_name"]',
             '.woocommerce-billing-last_name input',
+            '[data-field-name="billing_last_name"]',
+            '[aria-label*="apellido"]',
+            '[aria-label*="last name"]',
         ],
         billing_address_1: [
             '#billing_address_1',
+            '#billing-address-1',
             'textarea[name="billing_address_1"]',
             'input[name="billing_address_1"]',
+            '.woocommerce-billing-address-1 input',
+            '.woocommerce-billing-address-1 textarea',
+            '[data-field-name="billing_address_1"]',
+            '[aria-label*="dirección"]',
+            '[aria-label*="address"]',
         ],
         billing_city: [
             '#billing_city',
+            '#billing-city',
             'input[name="billing_city"]',
             '.woocommerce-billing-city input',
+            '[data-field-name="billing_city"]',
+            '[aria-label*="ciudad"]',
+            '[aria-label*="city"]',
         ],
         billing_state: [
             '#billing_state',
+            '#billing-state',
             'select[name="billing_state"]',
             'input[name="billing_state"]',
+            '.woocommerce-billing-state select',
+            '.woocommerce-billing-state input',
+            '[data-field-name="billing_state"]',
+            '[aria-label*="estado"]',
+            '[aria-label*="state"]',
+            '[aria-label*="provincia"]',
+            '[aria-label*="departamento"]',
         ],
         billing_postcode: [
             '#billing_postcode',
+            '#billing-postcode',
             'input[name="billing_postcode"]',
+            '.woocommerce-billing-postcode input',
+            '[data-field-name="billing_postcode"]',
+            '[aria-label*="código postal"]',
+            '[aria-label*="postcode"]',
+            '[aria-label*="zip"]',
         ],
         billing_country: [
             '#billing_country',
+            '#billing-country',
             'select[name="billing_country"]',
+            'input[name="billing_country"]',
+            '.woocommerce-billing-country select',
+            '.woocommerce-billing-country input',
+            '[data-field-name="billing_country"]',
+            '[aria-label*="país"]',
+            '[aria-label*="country"]',
         ],
     };
 
+    // ==========================================
+    // 🔄 USAR CONFIGURACIÓN PERSONALIZADA SI EXISTE
+    // ==========================================
+    
+    if (typeof wseFieldConfig !== 'undefined' && wseFieldConfig && Object.keys(wseFieldConfig).length > 0) {
+        if (SERVER_CONFIG.debug) {
+            console.log('%c📋 Config personalizada encontrada', 'color: #10b981', wseFieldConfig);
+        }
+        
+        // Mezclar config personalizada con la base (personalizada tiene prioridad)
+        FIELD_SELECTORS = Object.assign({}, FIELD_SELECTORS, wseFieldConfig);
+    }
+
+    if (SERVER_CONFIG.debug) {
+        console.log('%c📊 Selectores de campos cargados', 'color: #6366f1', FIELD_SELECTORS);
+    }
+
+    // ==========================================
+    // 🔍 FUNCIONES DE BÚSQUEDA DE CAMPOS
+    // ==========================================
+
     /**
-     * 🔍 Encontrar elemento por múltiples selectores
+     * Encontrar elemento por múltiples selectores
+     * Intenta cada selector hasta encontrar el campo
      */
     function findField(fieldName) {
         const selectors = FIELD_SELECTORS[fieldName];
-        if (!selectors) return null;
+        
+        if (!selectors) {
+            if (SERVER_CONFIG.debug) {
+                console.warn(`⚠️  No hay selectores configurados para: ${fieldName}`);
+            }
+            return null;
+        }
 
-        for (let selector of selectors) {
-            const $el = $(selector).first();
-            if ($el.length) {
-                return $el;
+        for (let i = 0; i < selectors.length; i++) {
+            const selector = selectors[i];
+            
+            try {
+                const $el = $(selector).first();
+                
+                if ($el.length && $el.is(':visible')) {
+                    if (SERVER_CONFIG.debug) {
+                        console.log(`✅ ${fieldName} encontrado con selector: ${selector}`);
+                    }
+                    return $el;
+                }
+            } catch (e) {
+                // Selector CSS inválido, continuar con el siguiente
+                if (SERVER_CONFIG.debug) {
+                    console.warn(`⚠️  Selector inválido para ${fieldName}: ${selector}`);
+                }
             }
         }
 
+        if (SERVER_CONFIG.debug) {
+            console.warn(`❌ Campo NO encontrado: ${fieldName}`);
+        }
         return null;
     }
 
     /**
-     * 📋 Obtener valor de campo
+     * Obtener valor de un campo
      */
     function getFieldValue(fieldName) {
         const $field = findField(fieldName);
-        if (!$field) return '';
+        
+        if (!$field) {
+            return '';
+        }
 
         let value = $field.val() || '';
         value = String(value).trim();
@@ -101,10 +211,68 @@ jQuery(document).ready(function($) {
     }
 
     /**
-     * 🌐 Enviar datos al servidor
+     * Diagnosticar y reportar campos encontrados
+     */
+    function diagnoseFields() {
+        if (!SERVER_CONFIG.debug) {
+            return;
+        }
+
+        console.group('%c🔍 DIAGNÓSTICO DE CAMPOS', 'color: #6366f1; font-weight: bold; font-size: 12px');
+        
+        const requiredFields = [
+            'billing_email',
+            'billing_phone',
+            'billing_first_name',
+            'billing_last_name',
+            'billing_address_1',
+            'billing_city',
+            'billing_state',
+            'billing_postcode',
+            'billing_country',
+        ];
+
+        let foundCount = 0;
+
+        requiredFields.forEach(fieldName => {
+            const $field = findField(fieldName);
+            const found = $field && $field.length > 0;
+            const value = found ? $field.val() : 'N/A';
+            
+            if (found) foundCount++;
+            
+            console.log(
+                `${found ? '✅' : '❌'} ${fieldName}`,
+                {
+                    encontrado: found,
+                    visible: found && $field.is(':visible'),
+                    tipo: found ? $field.prop('tagName') : 'N/A',
+                    valor: value
+                }
+            );
+        });
+
+        console.log(`\n📊 Total de campos encontrados: ${foundCount}/${requiredFields.length}`);
+        console.groupEnd();
+    }
+
+    // ==========================================
+    // 🌐 ENVÍO DE DATOS AL SERVIDOR
+    // ==========================================
+
+    /**
+     * Enviar datos capturados al servidor
      */
     function sendCaptureData(data) {
         return new Promise((resolve) => {
+            if (SERVER_CONFIG.debug) {
+                console.log('%c📤 Iniciando AJAX', 'color: #6366f1', {
+                    url: SERVER_CONFIG.ajaxUrl,
+                    action: data.action,
+                    nonce: !!data.nonce,
+                });
+            }
+
             $.ajax({
                 url: SERVER_CONFIG.ajaxUrl,
                 type: 'POST',
@@ -113,35 +281,64 @@ jQuery(document).ready(function($) {
                 cache: false,
                 dataType: 'json',
 
-                // ✅ Éxito
+                // ✅ Petición exitosa
                 success: function(response) {
                     if (SERVER_CONFIG.debug) {
-                        console.log('%c✅ Datos capturados', 'color: #10b981', response);
+                        console.log('%c✅ Respuesta del servidor', 'color: #10b981', response);
                     }
+                    
+                    if (response && response.success && response.data && response.data.captured) {
+                        if (SERVER_CONFIG.debug) {
+                            console.log('%c🎉 Datos capturados exitosamente', 'color: #10b981; font-weight: bold');
+                        }
+                    }
+                    
                     resolve(true);
                 },
 
-                // ❌ Error
+                // ❌ Error en la petición
                 error: function(xhr, status, error) {
                     if (SERVER_CONFIG.debug) {
-                        console.warn('%c⚠️  Error al enviar', 'color: #ef4444', {
+                        console.error('%c❌ Error AJAX', 'color: #ef4444; font-weight: bold', {
                             status: status,
                             error: error,
-                            response: xhr.responseText
+                            httpStatus: xhr.status,
+                            responseText: xhr.responseText ? xhr.responseText.substring(0, 200) : 'N/A'
                         });
                     }
-                    resolve(false); // No fallar, continuar
+                    
+                    // No fallar, continuar intentando
+                    resolve(false);
+                },
+
+                // Timeout
+                timeout: function() {
+                    if (SERVER_CONFIG.debug) {
+                        console.warn('%c⏱️  Timeout - Petición tardó más de 15s', 'color: #f59e0b');
+                    }
+                    resolve(false);
                 }
             });
         });
     }
 
+    // ==========================================
+    // 📤 CAPTURA Y ENVÍO DE DATOS
+    // ==========================================
+
     /**
-     * 📤 Capturar y enviar datos
+     * Capturar datos del formulario y enviar al servidor
      */
     async function captureAndSend() {
-        if (isProcessing) return;
+        // Evitar procesar mientras ya se está procesando
+        if (isProcessing) {
+            if (SERVER_CONFIG.debug) {
+                console.log('⏳ Ya hay un proceso en curso, esperando...');
+            }
+            return;
+        }
 
+        // Recolectar datos de todos los campos
         const data = {
             action: 'wse_pro_capture_cart',
             billing_email: getFieldValue('billing_email'),
@@ -155,14 +352,15 @@ jQuery(document).ready(function($) {
             billing_country: getFieldValue('billing_country'),
         };
 
-        // Validación: Al menos email o teléfono
+        // Validación: Al menos email O teléfono
         if (!data.billing_email && !data.billing_phone) {
             if (SERVER_CONFIG.debug) {
-                console.log('⏭️  Sin email o teléfono');
+                console.log('⏭️  Sin email ni teléfono - No capturar');
             }
             return;
         }
 
+        // Añadir nonce si existe
         if (SERVER_CONFIG.nonce) {
             data.nonce = SERVER_CONFIG.nonce;
         }
@@ -170,7 +368,7 @@ jQuery(document).ready(function($) {
         isProcessing = true;
 
         if (SERVER_CONFIG.debug) {
-            console.log('%c📤 Enviando datos...', 'color: #6366f1', data);
+            console.log('%c📤 Enviando datos...', 'color: #6366f1; font-weight: bold', data);
         }
 
         await sendCaptureData(data);
@@ -178,28 +376,51 @@ jQuery(document).ready(function($) {
         isProcessing = false;
     }
 
+    // ==========================================
+    // 🎯 ADJUNTAR LISTENERS A CAMPOS
+    // ==========================================
+
     /**
-     * 🎯 Adjuntar listeners a todos los campos
+     * Adjuntar event listeners a todos los campos
      */
     function attachListeners() {
+        if (SERVER_CONFIG.debug) {
+            console.log('%c🔌 Adjuntando listeners a campos...', 'color: #6366f1');
+        }
+
+        let listenersAttached = 0;
+
+        // Iterar sobre cada campo
         Object.keys(FIELD_SELECTORS).forEach(fieldName => {
             const selectors = FIELD_SELECTORS[fieldName];
             
             selectors.forEach(selector => {
-                $(document).off('change blur input', selector);
-                $(document).on('change blur input', selector, function() {
-                    if (SERVER_CONFIG.debug) {
-                        console.log(`👁️  Campo cambió: ${fieldName}`);
-                    }
+                try {
+                    // Remover listeners anteriores (si existen)
+                    $(document).off('change blur input', selector);
                     
-                    // Debounce: Esperar 2 segundos
-                    clearTimeout(window.captureDebounceTimer);
-                    window.captureDebounceTimer = setTimeout(captureAndSend, 2000);
-                });
+                    // Adjuntar nuevos listeners
+                    $(document).on('change blur input', selector, function() {
+                        if (SERVER_CONFIG.debug) {
+                            console.log(`👁️  Campo cambió: ${fieldName}`);
+                        }
+                        
+                        // Debounce: Esperar 2 segundos antes de capturar
+                        clearTimeout(window.captureDebounceTimer);
+                        window.captureDebounceTimer = setTimeout(captureAndSend, 2000);
+                    });
+
+                    listenersAttached++;
+                } catch (e) {
+                    // Selector CSS inválido, ignorar
+                    if (SERVER_CONFIG.debug) {
+                        console.warn(`⚠️  Error adjuntando listener a: ${selector}`);
+                    }
+                }
             });
         });
 
-        // Listener para Select2 (WooCommerce)
+        // Listener para Select2 (usado por WooCommerce)
         $(document).off('select2:select').on('select2:select', 'select[name*="billing"]', function() {
             if (SERVER_CONFIG.debug) {
                 console.log('✓ Select2 cambió');
@@ -208,56 +429,107 @@ jQuery(document).ready(function($) {
             window.captureDebounceTimer = setTimeout(captureAndSend, 1500);
         });
 
-        // Listener para actualizaciones de checkout
+        // Listener para actualizaciones de checkout (WooCommerce)
         $(document.body).off('updated_checkout').on('updated_checkout', function() {
             if (SERVER_CONFIG.debug) {
-                console.log('%c🔄 Checkout actualizado', 'color: #6366f1');
+                console.log('%c🔄 Evento: Checkout actualizado', 'color: #6366f1');
             }
             clearTimeout(window.captureDebounceTimer);
             window.captureDebounceTimer = setTimeout(captureAndSend, 2500);
         });
 
         if (SERVER_CONFIG.debug) {
-            console.log('%c✅ Listeners adjuntados', 'color: #10b981');
+            console.log(`%c✅ ${listenersAttached} listeners adjuntados correctamente`, 'color: #10b981');
         }
     }
 
+    // ==========================================
+    // 🚀 INICIALIZACIÓN
+    // ==========================================
+
     /**
-     * 🚀 Inicialización
+     * Inicializar el script
      */
     function init() {
-        if (!$('form.checkout').length) {
+        // Buscar formulario de checkout (múltiples variantes)
+        const formCheckout = $('form.checkout');
+        const dataCheckout = $('[data-checkout]');
+        const formAny = $('form[name*="checkout"]');
+
+        if (formCheckout.length === 0 && dataCheckout.length === 0 && formAny.length === 0) {
             if (SERVER_CONFIG.debug) {
-                console.log('⏳ Esperando formulario de checkout...');
+                console.log('⏳ Formulario de checkout no encontrado aún. Esperando...');
             }
             return;
         }
 
         if (SERVER_CONFIG.debug) {
-            console.log('%c✅ Formulario encontrado - Inicializando', 'color: #10b981');
+            console.log('%c✅ Formulario de checkout ENCONTRADO', 'color: #10b981; font-weight: bold');
         }
 
+        // Diagnosticar campos disponibles
+        diagnoseFields();
+
+        // Adjuntar listeners a campos
         attachListeners();
 
-        // Primera captura después de 3 segundos
-        setTimeout(captureAndSend, 3000);
+        // Primera captura después de 3 segundos (para llenar datos existentes)
+        setTimeout(() => {
+            if (SERVER_CONFIG.debug) {
+                console.log('%c📌 Ejecutando captura inicial', 'color: #f59e0b');
+            }
+            captureAndSend();
+        }, 3000);
 
-        // Captura periódica cada 30 segundos
-        setInterval(captureAndSend, 30000);
+        // Captura periódica cada 30 segundos (por si hay cambios)
+        setInterval(() => {
+            if (SERVER_CONFIG.debug) {
+                console.log('%c⏰ Captura periódica', 'color: #f59e0b');
+            }
+            captureAndSend();
+        }, 30000);
+
+        if (SERVER_CONFIG.debug) {
+            console.log('%c🎉 WooWApp inicializado correctamente', 'color: #10b981; font-weight: bold; font-size: 14px');
+        }
     }
 
-    // Iniciar cuando esté listo
+    // ==========================================
+    // 🔄 TRIGGER DE INICIALIZACIÓN
+    // ==========================================
+
+    // Si el documento aún se está cargando, esperar
     if (document.readyState === 'loading') {
-        $(document).on('ready', init);
+        $(document).on('DOMContentLoaded', init);
     } else {
+        // Si ya está cargado, inicializar inmediatamente
         init();
     }
 
-    // También iniciar cuando checkout se actualice
+    // También iniciar cuando el checkout se actualice (WooCommerce AJAX)
     $(document.body).on('updated_checkout', function() {
         if (!window.wseInitialized) {
             window.wseInitialized = true;
+            if (SERVER_CONFIG.debug) {
+                console.log('%c🔄 Inicialización por evento updated_checkout', 'color: #6366f1');
+            }
             init();
         }
     });
+
+    // ==========================================
+    // 🧪 MODO TEST (DEBUG)
+    // ==========================================
+
+    if (SERVER_CONFIG.debug) {
+        // Exponer función de prueba en consola
+        window.wseTestFields = function() {
+            console.log('%c🧪 TEST DE CAMPOS', 'color: #f59e0b; font-weight: bold; font-size: 14px');
+            diagnoseFields();
+            console.log('%c📤 Enviando datos de prueba...', 'color: #f59e0b');
+            captureAndSend();
+        };
+
+        console.log('%c💡 Tip: Escribe wseTestFields() en la consola para probar la captura', 'color: #f59e0b; font-style: italic');
+    }
 });
